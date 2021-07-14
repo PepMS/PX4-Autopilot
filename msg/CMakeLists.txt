@@ -41,6 +41,7 @@ set(msg_files
 	actuator_controls.msg
 	actuator_controls_status.msg
 	actuator_motors.msg
+	actuator_direct_control.msg
 	actuator_outputs.msg
 	actuator_servos.msg
 	adc_report.msg
