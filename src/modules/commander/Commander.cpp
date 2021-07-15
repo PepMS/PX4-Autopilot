@@ -363,6 +363,9 @@ int Commander::custom_command(int argc, char *argv[])
 				send_vehicle_command(vehicle_command_s::VEHICLE_CMD_DO_SET_MODE, 1, PX4_CUSTOM_MAIN_MODE_AUTO,
 						     PX4_CUSTOM_SUB_MODE_AUTO_PRECLAND);
 
+			} else if (!strcmp(argv[2], "motorcontrol")) {
+				send_vehicle_command(vehicle_command_s::VEHICLE_CMD_DO_SET_MODE, 1, PX4_CUSTOM_MAIN_MODE_MOTORCTL);
+
 			} else {
 				PX4_ERR("argument %s unsupported.", argv[1]);
 			}
@@ -871,6 +874,12 @@ Commander::handle_command(const vehicle_command_s &cmd)
 
 					/* OFFBOARD */
 					main_ret = main_state_transition(_status, commander_state_s::MAIN_STATE_OFFBOARD, _status_flags, _internal_state);
+
+				} else if (custom_main_mode == PX4_CUSTOM_MAIN_MODE_MOTORCTL) {
+					reset_posvel_validity(); // Not sure about the funcionality of this
+
+					/* DIRECT MOTOR CONTROL */
+					main_ret = main_state_transition(_status, commander_state_s::MAIN_STATE_MOTORCTL, _status_flags, _internal_state);
 				}
 
 			} else {
@@ -3392,6 +3401,19 @@ Commander::update_control_mode()
 		_vehicle_control_mode.flag_control_climb_rate_enabled = true;
 		_vehicle_control_mode.flag_control_position_enabled = !_status.in_transition_mode;
 		_vehicle_control_mode.flag_control_velocity_enabled = !_status.in_transition_mode;
+		break;
+
+	case vehicle_status_s::NAVIGATION_STATE_MOTOR_CTL:
+		_vehicle_control_mode.flag_control_manual_enabled = false;
+		_vehicle_control_mode.flag_control_auto_enabled = false;
+		_vehicle_control_mode.flag_control_rates_enabled = true; // If this is set to false PX4 chrashes
+		_vehicle_control_mode.flag_control_attitude_enabled = false;
+		_vehicle_control_mode.flag_control_altitude_enabled = false;
+		_vehicle_control_mode.flag_control_climb_rate_enabled = false;
+		_vehicle_control_mode.flag_control_position_enabled = false;
+		_vehicle_control_mode.flag_control_velocity_enabled = false;
+		_vehicle_control_mode.flag_control_velocity_enabled = false;
+		_vehicle_control_mode.flag_control_motors_enabled = true;
 		break;
 
 	default:

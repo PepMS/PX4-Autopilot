@@ -737,16 +737,16 @@ bool MixingOutput::updateStaticMixer()
 		mixed_num_outputs = _max_num_outputs;
 	} else {
 		mixed_num_outputs = _mixers->mix(outputs, _max_num_outputs);
-	}
 
-	/* the output limit call takes care of out of band errors, NaN and constrains */
-	output_limit_calc(_throttle_armed, armNoThrottle(), mixed_num_outputs, _reverse_output_mask,
-			  _disarmed_value, _min_value, _max_value, outputs, _current_output_value, &_output_limit);
+		/* the output limit call takes care of out of band errors, NaN and constrains */
+		output_limit_calc(_throttle_armed, armNoThrottle(), mixed_num_outputs, _reverse_output_mask,
+				_disarmed_value, _min_value, _max_value, outputs, _current_output_value, &_output_limit);
 
-	/* overwrite outputs in case of force_failsafe with _failsafe_value values */
-	if (_armed.force_failsafe) {
-		for (size_t i = 0; i < mixed_num_outputs; i++) {
-			_current_output_value[i] = _failsafe_value[i];
+		/* overwrite outputs in case of force_failsafe with _failsafe_value values */
+		if (_armed.force_failsafe) {
+			for (size_t i = 0; i < mixed_num_outputs; i++) {
+				_current_output_value[i] = _failsafe_value[i];
+			}
 		}
 	}
 
