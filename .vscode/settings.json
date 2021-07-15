@@ -31,6 +31,7 @@
                 "esc"
         ],
         "debug.toolBarLocation": "docked",
+        "editor.acceptSuggestionOnEnter": "on",
         "editor.defaultFormatter": "chiehyu.vscode-astyle",
         "editor.dragAndDrop": false,
         "editor.insertSpaces": false,
