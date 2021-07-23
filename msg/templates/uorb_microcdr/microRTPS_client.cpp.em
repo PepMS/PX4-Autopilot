@@ -179,7 +179,7 @@ void *send(void *args)
 			last_stats_update = hrt_absolute_time();
 		}
 
-		px4_usleep(tx_interval);
+		// px4_usleep(tx_interval);
 
 		++data->sent_loop;
 	}
