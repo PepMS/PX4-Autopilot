@@ -84,17 +84,30 @@ MulticopterLandDetector::MulticopterLandDetector()
 
 void MulticopterLandDetector::_update_topics()
 {
-	actuator_controls_s actuator_controls;
-
-	if (_actuator_controls_sub.update(&actuator_controls)) {
-		_actuator_controls_throttle = actuator_controls.control[actuator_controls_s::INDEX_THROTTLE];
-	}
 
 	vehicle_control_mode_s vehicle_control_mode;
 
 	if (_vehicle_control_mode_sub.update(&vehicle_control_mode)) {
 		_flag_control_climb_rate_enabled = vehicle_control_mode.flag_control_climb_rate_enabled;
 	}
+
+
+	if (vehicle_control_mode.flag_control_motors_enabled) {
+		actuator_direct_control_s direct_controls;
+		if (_direct_control_sub.update(&direct_controls)) {
+			for (size_t i = 0; i < direct_controls.noutputs; i++) {
+				_actuator_controls_throttle += direct_controls.output[i];
+			}
+			_actuator_controls_throttle /= direct_controls.noutputs;
+		}
+	} else {
+		actuator_controls_s actuator_controls;
+
+		if (_actuator_controls_sub.update(&actuator_controls)) {
+			_actuator_controls_throttle = actuator_controls.control[actuator_controls_s::INDEX_THROTTLE];
+		}
+	}
+
 
 	if (_params.useHoverThrustEstimate) {
 		hover_thrust_estimate_s hte;

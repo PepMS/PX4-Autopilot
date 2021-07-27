@@ -48,6 +48,8 @@
 #include <uORB/topics/vehicle_control_mode.h>
 #include <uORB/topics/vehicle_local_position_setpoint.h>
 #include <uORB/topics/takeoff_status.h>
+#include <uORB/topics/actuator_direct_control.h>
+
 
 #include "LandDetector.h"
 
@@ -111,6 +113,7 @@ private:
 	} _params{};
 
 	uORB::Subscription _actuator_controls_sub{ORB_ID(actuator_controls_0)};
+	uORB::Subscription _direct_control_sub{ORB_ID(actuator_direct_control)};
 	uORB::Subscription _hover_thrust_estimate_sub{ORB_ID(hover_thrust_estimate)};
 	uORB::Subscription _trajectory_setpoint_sub{ORB_ID(trajectory_setpoint)};
 	uORB::Subscription _vehicle_angular_velocity_sub{ORB_ID(vehicle_angular_velocity)};
