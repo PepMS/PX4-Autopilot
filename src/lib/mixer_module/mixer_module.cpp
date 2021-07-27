@@ -76,7 +76,7 @@ MixingOutput::MixingOutput(const char *param_prefix, uint8_t max_num_outputs, Ou
 	{&interface, ORB_ID(actuator_controls_2)},
 	{&interface, ORB_ID(actuator_controls_3)},
 },
-_direct_control_subs{&interface, ORB_ID(actuator_direct_control)},
+// _direct_control_subs{&interface, ORB_ID(actuator_direct_control)},
 _scheduling_policy(scheduling_policy),
 _support_esc_calibration(support_esc_calibration),
 _max_num_outputs(max_num_outputs < MAX_ACTUATORS ? max_num_outputs : MAX_ACTUATORS),
@@ -309,11 +309,11 @@ bool MixingOutput::updateSubscriptionsStaticMixer(bool allow_wq_switch, bool lim
 			}
 		}
 
-		if (_direct_control_subs.registerCallback()) {
-			PX4_DEBUG("subscribed to direct_actuator_control_");
-		} else {
-			PX4_ERR("direct_actuator_control register callback failed!");
-		}
+		// if (_direct_control_subs.registerCallback()) {
+		// 	PX4_DEBUG("subscribed to direct_actuator_control_");
+		// } else {
+		// 	PX4_ERR("direct_actuator_control register callback failed!");
+		// }
 
 		// if nothing required keep periodic schedule (so the module can update other things)
 		if (_groups_required == 0) {
@@ -504,7 +504,7 @@ void MixingOutput::setMaxTopicUpdateRate(unsigned max_topic_update_interval_us)
 		}
 	}
 
-	_direct_control_subs.set_interval_us(_max_topic_update_interval_us);
+	// _direct_control_subs.set_interval_us(_max_topic_update_interval_us);
 }
 
 void MixingOutput::setAllMinValues(uint16_t value)
@@ -550,6 +550,7 @@ void MixingOutput::unregister()
 	}
 
 	_direct_control_subs.unregisterCallback();
+	// _direct_control_subs.unregisterCallback();
 }
 
 void MixingOutput::updateOutputSlewrateMultirotorMixer()
@@ -725,12 +726,12 @@ bool MixingOutput::updateStaticMixer()
 	/* get direct controls */
 	_direct_control_subs.copy(&_direct_controls);
 
-
 	/* do mixing */
 	float outputs[MAX_ACTUATORS] {};
 	unsigned mixed_num_outputs = 0;
 	if (_motor_control) {
 		// here do the assignment looking at the motor control topic
+		_direct_control_subs.update(&_direct_controls);
 		for (size_t i = 0; i < _max_num_outputs; i++) {
 			outputs[i] = _direct_controls.output[i];
 		}

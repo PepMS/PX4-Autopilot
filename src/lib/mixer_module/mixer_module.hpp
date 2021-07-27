@@ -295,7 +295,7 @@ private:
 	uORB::Subscription _armed_sub{ORB_ID(actuator_armed)};
 	uORB::Subscription _v_control_mode_sub{ORB_ID(vehicle_control_mode)};
 	uORB::SubscriptionCallbackWorkItem _control_subs[actuator_controls_s::NUM_ACTUATOR_CONTROL_GROUPS];
-	uORB::SubscriptionCallbackWorkItem _direct_control_subs;
+	uORB::Subscription _direct_control_subs{ORB_ID(actuator_direct_control)};
 
 	uORB::PublicationMulti<actuator_outputs_s> _outputs_pub{ORB_ID(actuator_outputs)};
 	uORB::PublicationMulti<multirotor_motor_limits_s> _to_mixer_status{ORB_ID(multirotor_motor_limits)}; 	///< mixer status flags
