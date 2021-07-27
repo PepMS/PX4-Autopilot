@@ -292,7 +292,7 @@ void micrortps_start_topics(const uint32_t &datarate, struct timespec &begin, ui
 		// loop forever if informed loop number is negative
 		if (_options.loops >= 0 && rcvd_loop >= _options.loops) { break; }
 
-		px4_usleep(_options.sleep_us);
+		// px4_usleep(_options.sleep_us);
 		++rcvd_loop;
 	}
 
