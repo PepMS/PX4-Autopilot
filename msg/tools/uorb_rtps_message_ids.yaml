@@ -187,8 +187,8 @@ rtps:
   - msg: vehicle_attitude
     id: 87
     send: true
-    poll: false
-    poll_interval: 5
+    poll: true
+    poll_interval: 4
   - msg: vehicle_attitude_setpoint
     id: 88
   - msg: vehicle_command
@@ -210,7 +210,7 @@ rtps:
   - msg: vehicle_local_position
     id: 96
     send: true
-    poll: false
+    poll: true
     poll_interval: 10
   - msg: vehicle_local_position_setpoint
     id: 97
@@ -250,7 +250,7 @@ rtps:
   - msg: vehicle_angular_velocity
     id: 112
     send: true
-    poll: false
+    poll: true
     poll_interval: 4
   - msg: vehicle_acceleration
     id: 113
