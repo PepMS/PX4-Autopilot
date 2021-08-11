@@ -409,3 +409,29 @@ def rtps_message_id(msg_id_map, message):
     raise AssertionError(
         "%s %s Please add an ID from the available pool:\n" % (message, error_msg) +
         ", ".join('%d' % id for id in check_available_ids(used_ids)))
+
+
+def rtps_message_poll(msg_id_map, message):
+    """
+    Get poll option of uORB message
+    """
+
+    for dict in msg_id_map[0]['rtps']:
+        if message in dict['msg']:
+            if dict.get('poll') is not None:
+                return dict['poll']
+            else:
+                return False
+
+
+def rtps_message_poll_interval(msg_id_map, message):
+    """
+    Get poll interval of uORB message
+    """
+
+    for dict in msg_id_map[0]['rtps']:
+        if message in dict['msg']:
+            if dict.get('poll_interval') is not None:
+                return dict['poll_interval']
+            else:
+                return False
