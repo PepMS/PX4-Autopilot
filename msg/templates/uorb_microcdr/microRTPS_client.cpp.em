@@ -18,10 +18,11 @@ import genmsg.msgs
 from px_generate_uorb_topic_files import MsgScope # this is in Tools/
 
 topic_names = [s.short_name for s in spec]
-send_topics = [(alias[idx] if alias[idx] else s.short_name) for idx, s in enumerate(spec) if scope[idx] == MsgScope.SEND if not rtps_message_poll(ids, alias[idx] if alias[idx] else s.short_name)]
-send_topics_poll = [(alias[idx] if alias[idx] else s.short_name) for idx, s in enumerate(spec) if scope[idx] == MsgScope.SEND if rtps_message_poll(ids, alias[idx] if alias[idx] else s.short_name)]
-send_base_types = [s.short_name for idx, s in enumerate(spec) if scope[idx] == MsgScope.SEND if not rtps_message_poll(ids, alias[idx] if alias[idx] else s.short_name)]
-send_base_types_poll = [s.short_name for idx, s in enumerate(spec) if scope[idx] == MsgScope.SEND if rtps_message_poll(ids, alias[idx] if alias[idx] else s.short_name)]
+send_topics = [(alias[idx] if alias[idx] else s.short_name) for idx, s in enumerate(spec) if scope[idx] == MsgScope.SEND and not poll[idx]]
+send_topics_poll = [(alias[idx] if alias[idx] else s.short_name) for idx, s in enumerate(spec) if scope[idx] == MsgScope.SEND and poll[idx]]
+send_topics_poll_interval = [poll_interval[idx] for idx, s in enumerate(spec) if scope[idx] == MsgScope.SEND and poll[idx]]
+send_base_types = [s.short_name for idx, s in enumerate(spec) if scope[idx] == MsgScope.SEND and not poll[idx]]
+send_base_types_poll = [s.short_name for idx, s in enumerate(spec) if scope[idx] == MsgScope.SEND and poll[idx]]
 
 recv_topics = [(alias[idx] if alias[idx] else s.short_name) for idx, s in enumerate(spec) if scope[idx] == MsgScope.RECEIVE]
 receive_base_types = [s.short_name for idx, s in enumerate(spec) if scope[idx] == MsgScope.RECEIVE]
@@ -144,8 +145,8 @@ void *send(void *args)
 	if (subs_poll->@(topic)_sub < 0) {
 		PX4_ERR("Failed to subscribe (%i)", errno);
 	}
-@[	        if rtps_message_poll_interval(ids, topic)]@
-	orb_set_interval(subs_poll->@(topic)_sub, @(rtps_message_poll_interval(ids, topic)));
+@[	        if send_topics_poll_interval[idx] > 0.0 ]@
+	orb_set_interval(subs_poll->@(topic)_sub, @(send_topics_poll_interval[idx]));
 @[	        end if ]@
 @[         end for]@
 @[    end if]@
@@ -160,40 +161,45 @@ void *send(void *args)
 	header_length = transport_node->get_header_length();
 	ucdr_init_buffer(&writer, reinterpret_cast<uint8_t *>(&data_buffer[header_length]), BUFFER_SIZE - header_length);
 
+	hrt_abstime last_update = 0;
 	while (!_should_exit_task) {
+		hrt_abstime now = hrt_absolute_time();
+		if (now - last_update > tx_interval) {
+			last_update = now;
 @[    for idx, topic in enumerate(send_topics)]@
-		{
+			{
 			@(send_base_types[idx])_s @(topic)_data;
 
-			if (subs->@(topic)_sub.update(&@(topic)_data))
-			{
+				if (subs->@(topic)_sub.update(&@(topic)_data))
+				{
 @[        if topic == 'Timesync' or topic == 'timesync']@
-				if (@(topic)_data.seq != last_remote_msg_seq && @(topic)_data.tc1 == 0) {
-					last_remote_msg_seq = @(topic)_data.seq;
+					if (@(topic)_data.seq != last_remote_msg_seq && @(topic)_data.tc1 == 0) {
+						last_remote_msg_seq = @(topic)_data.seq;
 
-					@(topic)_data.timestamp = hrt_absolute_time();
-					@(topic)_data.seq = last_msg_seq;
-					@(topic)_data.tc1 = hrt_absolute_time() * 1000ULL;
-					@(topic)_data.ts1 = @(topic)_data.ts1;
+						@(topic)_data.timestamp = hrt_absolute_time();
+						@(topic)_data.seq = last_msg_seq;
+						@(topic)_data.tc1 = hrt_absolute_time() * 1000ULL;
+						@(topic)_data.ts1 = @(topic)_data.ts1;
 
-					last_msg_seq++;
+						last_msg_seq++;
 @[        end if]@
-					// copy raw data into local buffer. Payload is shifted by header length to make room for header
-					serialize_@(send_base_types[idx])(&writer, &@(topic)_data, &data_buffer[header_length], &length);
+						// copy raw data into local buffer. Payload is shifted by header length to make room for header
+						serialize_@(send_base_types[idx])(&writer, &@(topic)_data, &data_buffer[header_length], &length);
 
-					if (0 < (read = transport_node->write(static_cast<char>(@(msgs[0].index(topic) + 1)), data_buffer, length))) {
-						data->total_sent += read;
-						tx_last_sec_read += read;
-						++data->sent;
+						if (0 < (read = transport_node->write(static_cast<char>(@(msgs[0].index(topic) + 1)), data_buffer, length))) {
+							data->total_sent += read;
+							tx_last_sec_read += read;
+							++data->sent;
+						}
+
+@[        if topic == 'Timesync' or topic == 'timesync']@
 					}
 
-@[        if topic == 'Timesync' or topic == 'timesync']@
-				}
-
 @[        end if]@
+				}
 			}
-		}
 @[    end for]@
+		}
 
 @[    if send_topics_poll]@
 		{
@@ -207,6 +213,7 @@ void *send(void *args)
 
 			if (pret < 0) {
 				PX4_ERR("poll failed (%i)", pret);
+				px4_usleep(tx_interval);
 			} else if (pret != 0) {
 @[        for idx, topic in enumerate(send_topics_poll)]@
 				if (fds[@(idx)].revents & POLLIN) {
@@ -214,30 +221,16 @@ void *send(void *args)
 					orb_copy(ORB_ID(@(topic)), subs_poll->@(topic)_sub, &@(topic)_data);
 					serialize_@(send_base_types_poll[idx])(&writer, &@(topic)_data, &data_buffer[header_length], &length);
 
-					if (0 < (read = transport_node->write(static_cast<char>(@(rtps_message_id(ids, topic))), data_buffer, length))) {
+					if (0 < (read = transport_node->write(static_cast<char>(@(msgs[0].index(topic) + 1)), data_buffer, length))) {
 						data->total_sent += read;
 						tx_last_sec_read += read;
 						++data->sent;
 					}
 				}
 @[        end for]@
-			} else {
-				if (hrt_absolute_time() - last_stats_update >= 1_s) {
-					data->sent_last_sec = tx_last_sec_read;
-					if (data->datarate > 0) {
-						bandwidth_mult = static_cast<float>(data->datarate) / static_cast<float>(tx_last_sec_read);
-						// Apply a low-pass filter to determine the new TX interval
-						tx_interval += 0.5f * (tx_interval / bandwidth_mult - tx_interval);
-						// Clamp the interval between 1 and 1000 ms
-						tx_interval = math::constrain(tx_interval, MIN_TX_INTERVAL_US, MAX_TX_INTERVAL_US);
-					}
-					tx_last_sec_read = 0;
-					last_stats_update = hrt_absolute_time();
-				}
-				px4_usleep(tx_interval);
 			}
 		}
-@[    else]@
+@[    end if]@
 		if (hrt_absolute_time() - last_stats_update >= 1_s) {
 			data->sent_last_sec = tx_last_sec_read;
 			if (data->datarate > 0) {
@@ -250,10 +243,9 @@ void *send(void *args)
 			tx_last_sec_read = 0;
 			last_stats_update = hrt_absolute_time();
 		}
-
+@[	if not send_topics_poll]@
 		px4_usleep(tx_interval);
-@[    end if]@
-
+@[	end if]@
 		++data->sent_loop;
 	}
 
