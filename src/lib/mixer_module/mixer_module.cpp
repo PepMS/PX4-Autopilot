@@ -549,7 +549,6 @@ void MixingOutput::unregister()
 		_subscription_callback->unregisterCallback();
 	}
 
-	_direct_control_subs.unregisterCallback();
 	// _direct_control_subs.unregisterCallback();
 }
 
