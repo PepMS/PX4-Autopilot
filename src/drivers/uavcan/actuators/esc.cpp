@@ -47,11 +47,13 @@ using namespace time_literals;
 
 UavcanEscController::UavcanEscController(uavcan::INode &node) :
 	_node(node),
-	_uavcan_pub_raw_cmd(node),
+	_uavcan_pub_rpm_cmd(node),
+	// _uavcan_pub_raw_cmd(node),
 	_uavcan_sub_status(node),
 	_orb_timer(node)
 {
-	_uavcan_pub_raw_cmd.setPriority(UAVCAN_COMMAND_TRANSFER_PRIORITY);
+	_uavcan_pub_rpm_cmd.setPriority(UAVCAN_COMMAND_TRANSFER_PRIORITY);
+	// _uavcan_pub_raw_cmd.setPriority(UAVCAN_COMMAND_TRANSFER_PRIORITY);
 }
 
 UavcanEscController::~UavcanEscController()
@@ -94,14 +96,25 @@ UavcanEscController::update_outputs(bool stop_motors, uint16_t outputs[MAX_ACTUA
 	 * Fill the command message
 	 * If unarmed, we publish an empty message anyway
 	 */
-	uavcan::equipment::esc::RawCommand msg;
+	// uavcan::equipment::esc::RawCommand msg;
+
+	// for (unsigned i = 0; i < num_outputs; i++) {
+	// 	if (stop_motors || outputs[i] == DISARMED_OUTPUT_VALUE) {
+	// 		msg.cmd.push_back(static_cast<unsigned>(0));
+
+	// 	} else {
+	// 		msg.cmd.push_back(static_cast<int>(outputs[i]));
+	// 	}
+	// }
+
+	uavcan::equipment::esc::RPMCommand msg;
 
 	for (unsigned i = 0; i < num_outputs; i++) {
 		if (stop_motors || outputs[i] == DISARMED_OUTPUT_VALUE) {
-			msg.cmd.push_back(static_cast<unsigned>(0));
+			msg.rpm.push_back(static_cast<unsigned>(0));
 
 		} else {
-			msg.cmd.push_back(static_cast<int>(outputs[i]));
+			msg.rpm.push_back(static_cast<int>(outputs[i]));
 		}
 	}
 
@@ -115,20 +128,30 @@ UavcanEscController::update_outputs(bool stop_motors, uint16_t outputs[MAX_ACTUA
 	 * From the standpoint of the PX4 architecture, however, this is a hack. It should be investigated why
 	 * the mixer returns more outputs than are actually used.
 	 */
-	for (int index = int(msg.cmd.size()) - 1; index >= _max_number_of_nonzero_outputs; index--) {
-		if (msg.cmd[index] != 0) {
+	for (int index = int(msg.rpm.size()) - 1; index >= _max_number_of_nonzero_outputs; index--) {
+		if (msg.rpm[index] != 0) {
 			_max_number_of_nonzero_outputs = index + 1;
 			break;
 		}
 	}
 
-	msg.cmd.resize(_max_number_of_nonzero_outputs);
+	msg.rpm.resize(_max_number_of_nonzero_outputs);
+
+	// for (int index = int(msg.cmd.size()) - 1; index >= _max_number_of_nonzero_outputs; index--) {
+	// 	if (msg.cmd[index] != 0) {
+	// 		_max_number_of_nonzero_outputs = index + 1;
+	// 		break;
+	// 	}
+	// }
+
+	// msg.cmd.resize(_max_number_of_nonzero_outputs);
 
 	/*
 	 * Publish the command message to the bus
 	 * Note that for a quadrotor it takes one CAN frame
 	 */
-	_uavcan_pub_raw_cmd.broadcast(msg);
+	// _uavcan_pub_raw_cmd.broadcast(msg);
+	_uavcan_pub_rpm_cmd.broadcast(msg);
 }
 
 void

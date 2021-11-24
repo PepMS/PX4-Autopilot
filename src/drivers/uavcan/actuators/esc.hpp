@@ -46,6 +46,7 @@
 
 #include <uavcan/uavcan.hpp>
 #include <uavcan/equipment/esc/RawCommand.hpp>
+#include <uavcan/equipment/esc/RPMCommand.hpp>
 #include <uavcan/equipment/esc/Status.hpp>
 #include <lib/perf/perf_counter.h>
 #include <uORB/PublicationMulti.hpp>
@@ -60,6 +61,10 @@ public:
 	static constexpr int MAX_ACTUATORS = esc_status_s::CONNECTED_ESC_MAX;
 	static constexpr unsigned MAX_RATE_HZ = 200;			///< XXX make this configurable
 	static constexpr uint16_t DISARMED_OUTPUT_VALUE = UINT16_MAX;
+
+	static constexpr int MAX_RPM = 8000;
+	static constexpr int MIN_RPM = 1000;
+	static constexpr int RANGE_RPM = MAX_RPM - MIN_RPM;
 
 	static_assert(uavcan::equipment::esc::RawCommand::FieldTypes::cmd::MaxSize >= MAX_ACTUATORS, "Too many actuators");
 
@@ -114,7 +119,8 @@ private:
 	 */
 	uavcan::MonotonicTime							_prev_cmd_pub;   ///< rate limiting
 	uavcan::INode								&_node;
-	uavcan::Publisher<uavcan::equipment::esc::RawCommand>			_uavcan_pub_raw_cmd;
+	// uavcan::Publisher<uavcan::equipment::esc::RawCommand>			_uavcan_pub_raw_cmd;
+	uavcan::Publisher<uavcan::equipment::esc::RPMCommand>			_uavcan_pub_rpm_cmd;
 	uavcan::Subscriber<uavcan::equipment::esc::Status, StatusCbBinder>	_uavcan_sub_status;
 	uavcan::TimerEventForwarder<TimerCbBinder>				_orb_timer;
 
