@@ -681,7 +681,7 @@ UavcanNode::init(uavcan::NodeID node_id, UAVCAN_DRIVER::BusEvent &bus_events)
 	if (!_mixing_interface_esc.mixingOutput().useDynamicMixing()) {
 		// these are configurable with dynamic mixing
 		_mixing_interface_esc.mixingOutput().setAllMinValues(0); // Can be changed to 1 later, according to UAVCAN_ESC_IDLT
-		_mixing_interface_esc.mixingOutput().setAllMaxValues(UavcanEscController::max_output_value());
+		_mixing_interface_esc.mixingOutput().setAllMaxValues(13100);
 
 		param_get(param_find("UAVCAN_ESC_IDLT"), &_idle_throttle_when_armed_param);
 		enable_idle_throttle_when_armed(true);
