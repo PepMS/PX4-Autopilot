@@ -34,7 +34,7 @@
 add_custom_target(upload
 	COMMAND rsync -arh --progress
 			${CMAKE_RUNTIME_OUTPUT_DIRECTORY} ${PX4_SOURCE_DIR}/posix-configs/bbblue/*.config ${PX4_BINARY_DIR}/etc # source
-			debian@beaglebone.lan:/home/debian/px4 # destination
+			root@192.168.8.1:/home/ubuntu/px4 # destination
 	DEPENDS px4
 	COMMENT "uploading px4"
 	USES_TERMINAL
