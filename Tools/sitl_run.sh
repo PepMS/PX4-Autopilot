@@ -74,6 +74,9 @@ if [ "$model" == "" ] || [ "$model" == "none" ]; then
 	if [ "$program" == "jsbsim" ]; then
 		echo "empty model, setting rascal as default for jsbsim"
 		model="rascal"
+	elif [ "$program" == "sihsim" ]; then
+		echo "empty model, setting quadx as default for sihsim"
+		model="quadx"
 	else
 		echo "empty model, setting iris as default"
 		model="iris"
@@ -192,7 +195,7 @@ elif [ "$program" == "ignition" ] && [ -z "$no_sim" ]; then
 		ignition_headless=""
 	fi
 	source "$src_path/Tools/setup_ignition.bash" "${src_path}" "${build_path}"
-	ign gazebo ${verbose} ${ignition_headless} -r "${src_path}/Tools/simulation-ignition/worlds/${model}.world"&
+	ign gazebo --force-version 5 ${verbose} ${ignition_headless} -r "${src_path}/Tools/simulation-ignition/worlds/${model}.world"&
 elif [ "$program" == "flightgear" ] && [ -z "$no_sim" ]; then
 	echo "FG setup"
 	cd "${src_path}/Tools/flightgear_bridge/"
@@ -214,6 +217,12 @@ elif [ "$program" == "jsbsim" ] && [ -z "$no_sim" ]; then
 	fi
 	"${build_path}/build_jsbsim_bridge/jsbsim_bridge" ${model} -s "${src_path}/Tools/jsbsim_bridge/scene/${world}.xml" 2> /dev/null &
 	JSBSIM_PID=$!
+elif [ "$program" == "sihsim" ] && [ ! -n "$no_sim" ]; then
+	export SIM_MODE="sihsim"
+	if [ "$model" != "airplane" ] && [ "$model" != "quadx" ] && [ "$model" != "xvert" ]; then
+		echo "Model ${model} not compatible with with sih. sih supports [quadx,airplane,xvert]."
+		exit 1
+	fi
 fi
 
 pushd "$rootfs" >/dev/null

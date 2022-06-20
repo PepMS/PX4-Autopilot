@@ -51,6 +51,13 @@ menu "Toolchain"
         string "Architecture"
         default ""
 
+    config BOARD_LTO
+        bool "(EXPERIMENTAL) Link Time Optimization (LTO)"
+        default n
+        help
+            Enables LTO flag in linker
+            Note: Highly EXPERIMENTAL, furthermore make sure you're using a modern compiler GCC 9 or later
+
     config BOARD_FULL_OPTIMIZATION
         bool "Full optmization (O3)"
         default n
@@ -63,13 +70,10 @@ menu "Toolchain"
         help
             relative path to the ROMFS root directory
 
-    config BOARD_BUILD_BOOTLOADER
-        bool "Enable bootloader"
-        help
-            flag to enable building and including the bootloader config
-
     config BOARD_IO
         string "IO board name"
+        default "px4_io-v2_default"
+        depends on DRIVERS_PX4IO
         help
             name of IO board to be built and included in the ROMFS (requires a valid ROMFSROOT)
 
@@ -117,14 +121,14 @@ config BOARD_ETHERNET
         flag to indicate that ethernet is enabled
 
 config BOARD_CRYPTO
-    string "Crypto"
+    bool "Crypto support"
     help
-        Crypto implementation selection
+        Enable PX4 Crypto Support. Select the implementation under drivers
 
-config BOARD_KEYSTORE
-    string "Keystore"
+config BOARD_PROTECTED
+    bool "Memory protection"
     help
-        Keystore implememntation selection
+        Enable memory protection via MPU/MMU
 
 menu "Serial ports"
 

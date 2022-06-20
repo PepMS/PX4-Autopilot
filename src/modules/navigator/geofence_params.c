@@ -48,9 +48,6 @@
  *
  * Note: Setting this value to 4 enables flight termination,
  * which will kill the vehicle on violation of the fence.
- * Due to the inherent danger of this, this function is
- * disabled using a software circuit breaker, which needs
- * to be reset to 0 to really shut down the system.
  *
  * @min 0
  * @max 5
@@ -129,3 +126,15 @@ PARAM_DEFINE_FLOAT(GF_MAX_HOR_DIST, 0);
  * @group Geofence
  */
 PARAM_DEFINE_FLOAT(GF_MAX_VER_DIST, 0);
+
+/**
+ * Use Pre-emptive geofence triggering
+ *
+ * Predict the motion of the vehicle and trigger the breach if it is determined that the current trajectory
+ * would result in a breach happening before the vehicle can make evasive maneuvers.
+ * The vehicle is then re-routed to a safe hold position (stop for multirotor, loiter for fixed wing).
+ *
+ * @boolean
+ * @group Geofence
+ */
+PARAM_DEFINE_INT32(GF_PREDICT, 1);

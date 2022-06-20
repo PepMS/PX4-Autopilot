@@ -75,6 +75,9 @@ void Ekf::reset()
 	_control_status.value = 0;
 	_control_status_prev.value = 0;
 
+	_control_status.flags.in_air = true;
+	_control_status_prev.flags.in_air = true;
+
 	_ang_rate_delayed_raw.zero();
 
 	_fault_status.value = 0;
@@ -110,9 +113,6 @@ bool Ekf::update()
 		runTerrainEstimator();
 
 		updated = true;
-
-		// run EKF-GSF yaw estimator
-		runYawEKFGSF();
 	}
 
 	// the output observer always runs
@@ -143,21 +143,25 @@ bool Ekf::initialiseFilter()
 	}
 
 	// Sum the magnetometer measurements
-	if (_mag_buffer.pop_first_older_than(_imu_sample_delayed.time_us, &_mag_sample_delayed)) {
-		if (_mag_sample_delayed.time_us != 0) {
-			if (_mag_counter == 0) {
-				_mag_lpf.reset(_mag_sample_delayed.mag);
+	if (_mag_buffer) {
+		magSample mag_sample;
 
-			} else {
-				_mag_lpf.update(_mag_sample_delayed.mag);
+		if (_mag_buffer->pop_first_older_than(_imu_sample_delayed.time_us, &mag_sample)) {
+			if (mag_sample.time_us != 0) {
+				if (_mag_counter == 0) {
+					_mag_lpf.reset(mag_sample.mag);
+
+				} else {
+					_mag_lpf.update(mag_sample.mag);
+				}
+
+				_mag_counter++;
 			}
-
-			_mag_counter++;
 		}
 	}
 
 	// accumulate enough height measurements to be confident in the quality of the data
-	if (_baro_buffer.pop_first_older_than(_imu_sample_delayed.time_us, &_baro_sample_delayed)) {
+	if (_baro_buffer && _baro_buffer->pop_first_older_than(_imu_sample_delayed.time_us, &_baro_sample_delayed)) {
 		if (_baro_sample_delayed.time_us != 0) {
 			if (_baro_counter == 0) {
 				_baro_hgt_offset = _baro_sample_delayed.hgt;
@@ -170,7 +174,7 @@ bool Ekf::initialiseFilter()
 		}
 	}
 
-	if (_params.mag_fusion_type <= MAG_FUSE_TYPE_3D) {
+	if (_params.mag_fusion_type <= MagFuseType::MAG_3D) {
 		if (_mag_counter < _obs_buffer_length) {
 			// not enough mag samples accumulated
 			return false;
@@ -192,24 +196,23 @@ bool Ekf::initialiseFilter()
 	// calculate the initial magnetic field and yaw alignment
 	// but do not mark the yaw alignement complete as it needs to be
 	// reset once the leveling phase is done
-	resetMagHeading(_mag_lpf.getState(), false, false);
+	resetMagHeading(false, false);
 
 	// initialise the state covariance matrix now we have starting values for all the states
 	initialiseCovariance();
 
 	// update the yaw angle variance using the variance of the measurement
-	if (_params.mag_fusion_type <= MAG_FUSE_TYPE_3D) {
+	if (_params.mag_fusion_type <= MagFuseType::MAG_3D) {
 		// using magnetic heading tuning parameter
 		increaseQuatYawErrVariance(sq(fmaxf(_params.mag_heading_noise, 1.0e-2f)));
 	}
 
-	// try to initialise the terrain estimator
-	_terrain_initialised = initHagl();
+	// Initialise the terrain estimator
+	initHagl();
 
 	// reset the essential fusion timeout counters
 	_time_last_hgt_fuse = _time_last_imu;
 	_time_last_hor_pos_fuse = _time_last_imu;
-	_time_last_delpos_fuse = _time_last_imu;
 	_time_last_hor_vel_fuse = _time_last_imu;
 	_time_last_hagl_fuse = _time_last_imu;
 	_time_last_flow_terrain_fuse = _time_last_imu;
@@ -255,7 +258,6 @@ void Ekf::predictState()
 
 	// rotate the previous quaternion by the delta quaternion using a quaternion multiplication
 	_state.quat_nominal = (_state.quat_nominal * dq).normalized();
-
 	_R_to_earth = Dcmf(_state.quat_nominal);
 
 	// Calculate an earth frame delta velocity
@@ -285,16 +287,16 @@ void Ekf::predictState()
 	float input = 0.5f * (_imu_sample_delayed.delta_vel_dt + _imu_sample_delayed.delta_ang_dt);
 
 	// filter and limit input between -50% and +100% of nominal value
-	input = math::constrain(input, 0.5f * FILTER_UPDATE_PERIOD_S, 2.0f * FILTER_UPDATE_PERIOD_S);
+	const float filter_update_s = 1e-6f * _params.filter_update_interval_us;
+	input = math::constrain(input, 0.5f * filter_update_s, 2.f * filter_update_s);
 	_dt_ekf_avg = 0.99f * _dt_ekf_avg + 0.01f * input;
 
 	// some calculations elsewhere in code require a raw angular rate vector so calculate here to avoid duplication
-	// protect angainst possible small timesteps resulting from timing slip on previous frame that can drive spikes into the rate
+	// protect against possible small timesteps resulting from timing slip on previous frame that can drive spikes into the rate
 	// due to insufficient averaging
-	if (_imu_sample_delayed.delta_ang_dt > 0.25f * FILTER_UPDATE_PERIOD_S) {
+	if (_imu_sample_delayed.delta_ang_dt > 0.25f * _dt_ekf_avg) {
 		_ang_rate_delayed_raw = _imu_sample_delayed.delta_ang / _imu_sample_delayed.delta_ang_dt;
 	}
-
 }
 
 /*
@@ -325,10 +327,13 @@ void Ekf::calculateOutputStates(const imuSample &imu)
 	// Note fixed coefficients are used to save operations. The exact time constant is not important.
 	_yaw_rate_lpf_ef = 0.95f * _yaw_rate_lpf_ef + 0.05f * spin_del_ang_D / imu.delta_ang_dt;
 
+
+	_output_new.time_us = imu.time_us;
+	_output_vert_new.time_us = imu.time_us;
+
 	const Quatf dq(AxisAnglef{delta_angle});
 
 	// rotate the previous INS quaternion by the delta quaternions
-	_output_new.time_us = imu.time_us;
 	_output_new.quat_nominal = _output_new.quat_nominal * dq;
 
 	// the quaternions must always be normalised after modification

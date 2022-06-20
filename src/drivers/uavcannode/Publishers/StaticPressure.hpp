@@ -53,7 +53,9 @@ public:
 		UavcanPublisherBase(uavcan::equipment::air_data::StaticPressure::DefaultDataTypeID),
 		uORB::SubscriptionCallbackWorkItem(work_item, ORB_ID(sensor_baro)),
 		uavcan::Publisher<uavcan::equipment::air_data::StaticPressure>(node)
-	{}
+	{
+		this->setPriority(uavcan::TransferPriority::Default);
+	}
 
 	void PrintInfo() override
 	{
@@ -72,7 +74,7 @@ public:
 
 		if (uORB::SubscriptionCallbackWorkItem::update(&baro)) {
 			uavcan::equipment::air_data::StaticPressure static_pressure{};
-			static_pressure.static_pressure = baro.pressure * 100; // millibar -> pascals
+			static_pressure.static_pressure = baro.pressure;
 			uavcan::Publisher<uavcan::equipment::air_data::StaticPressure>::broadcast(static_pressure);
 
 			// ensure callback is registered

@@ -46,6 +46,7 @@
 #include <matrix/matrix/math.hpp>
 #include <uORB/Subscription.hpp>
 #include <uORB/topics/landing_gear.h>
+#include <uORB/topics/trajectory_setpoint.h>
 #include <uORB/topics/vehicle_local_position.h>
 #include <uORB/topics/vehicle_local_position_setpoint.h>
 #include <uORB/topics/vehicle_command.h>
@@ -81,7 +82,7 @@ public:
 	 * @param last_setpoint last output of the previous task
 	 * @return true on success, false on error
 	 */
-	virtual bool activate(const vehicle_local_position_setpoint_s &last_setpoint);
+	virtual bool activate(const trajectory_setpoint_s &last_setpoint);
 
 	/**
 	 * Call this to reset an active Flight Task
@@ -109,18 +110,10 @@ public:
 	virtual bool update();
 
 	/**
-	 * Call after update()
-	 * to constrain the generated setpoints in order to comply
-	 * with the constraints of the current mode
-	 * @return true on success, false on error
-	 */
-	virtual bool updateFinalize() { return true; };
-
-	/**
 	 * Get the output data
 	 * @return task output setpoints that get executed by the positon controller
 	 */
-	const vehicle_local_position_setpoint_s getPositionSetpoint();
+	const trajectory_setpoint_s getTrajectorySetpoint();
 
 	const ekf_reset_counters_s getResetCounters() const { return _reset_counters; }
 	void setResetCounters(const ekf_reset_counters_s &counters) { _reset_counters = counters; }
@@ -149,7 +142,7 @@ public:
 	 * Empty setpoint.
 	 * All setpoints are set to NAN.
 	 */
-	static const vehicle_local_position_setpoint_s empty_setpoint;
+	static const trajectory_setpoint_s empty_setpoint;
 
 	/**
 	 * Empty constraints.
@@ -175,6 +168,7 @@ public:
 	 * This method does nothing, each flighttask which wants to use the yaw handler needs to override this method.
 	 */
 	virtual void setYawHandler(WeatherVane *ext_yaw_handler) {}
+	virtual void overrideCruiseSpeed(const float cruise_speed_m_s) {}
 
 	void updateVelocityControllerFeedback(const matrix::Vector3f &vel_sp,
 					      const matrix::Vector3f &acc_sp)
@@ -214,13 +208,12 @@ protected:
 	virtual void _ekfResetHandlerVelocityZ(float delta_vz) {};
 	virtual void _ekfResetHandlerHeading(float delta_psi) {};
 
-	map_projection_reference_s _global_local_proj_ref{};
-	float                      _global_local_alt0{NAN};
+	MapProjection _geo_projection{};
+	float _global_local_alt0{NAN};
 
 	/* Time abstraction */
 	static constexpr uint64_t _timeout = 500000; /**< maximal time in us before a loop or data times out */
 
-	float _time{}; /**< passed time in seconds since the task was activated */
 	float _deltatime{}; /**< passed time in seconds since the task was last updated */
 
 	hrt_abstime _time_stamp_activate{}; /**< time stamp when task was activated */
@@ -232,8 +225,9 @@ protected:
 	matrix::Vector3f _velocity; /**< current vehicle velocity */
 
 	float _yaw{}; /**< current vehicle yaw heading */
-	float _dist_to_bottom{}; /**< current height above ground level */
-	float _dist_to_ground{}; /**< equals _dist_to_bottom if valid, height above home otherwise */
+	bool _is_yaw_good_for_control{}; /**< true if the yaw estimate can be used for yaw control */
+	float _dist_to_bottom{}; /**< current height above ground level if dist_bottom is valid */
+	float _dist_to_ground{}; /**< equals _dist_to_bottom if available, height above home otherwise */
 
 	/**
 	 * Setpoints which the position controller has to execute.

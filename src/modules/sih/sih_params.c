@@ -1,6 +1,6 @@
 /****************************************************************************
  *
- *   Copyright (c) 2019-2020 PX4 Development Team. All rights reserved.
+ *   Copyright (c) 2013-2022 PX4 Development Team. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -439,8 +439,9 @@ PARAM_DEFINE_FLOAT(SIH_T_TAU, 0.05f);
 /**
  * Vehicle type
  *
- * @value 0 MC
- * @value 1 FW
+ * @value 0 Multicopter
+ * @value 1 Fixed-Wing
+ * @value 2 Tailsitter
  * @reboot_required true
  * @group Simulation In Hardware
  */

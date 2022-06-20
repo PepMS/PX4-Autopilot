@@ -44,40 +44,35 @@
 #include <mathlib/mathlib.h>
 #include "ekf.h"
 
-bool Ekf::fuseHorizontalVelocity(const Vector3f &innov, const Vector2f &innov_gate, const Vector3f &obs_var,
+bool Ekf::fuseHorizontalVelocity(const Vector3f &innov, const float innov_gate, const Vector3f &obs_var,
 				 Vector3f &innov_var, Vector2f &test_ratio)
 {
-
 	innov_var(0) = P(4, 4) + obs_var(0);
 	innov_var(1) = P(5, 5) + obs_var(1);
-	test_ratio(0) = fmaxf(sq(innov(0)) / (sq(innov_gate(0)) * innov_var(0)),
-			      sq(innov(1)) / (sq(innov_gate(0)) * innov_var(1)));
+	test_ratio(0) = fmaxf(sq(innov(0)) / (sq(innov_gate) * innov_var(0)),
+			      sq(innov(1)) / (sq(innov_gate) * innov_var(1)));
 
 	const bool innov_check_pass = (test_ratio(0) <= 1.0f);
 
 	if (innov_check_pass) {
-		_time_last_hor_vel_fuse = _time_last_imu;
 		_innov_check_fail_status.flags.reject_hor_vel = false;
 
-		fuseVelPosHeight(innov(0), innov_var(0), 0);
-		fuseVelPosHeight(innov(1), innov_var(1), 1);
+		bool fuse_vx = fuseVelPosHeight(innov(0), innov_var(0), 0);
+		bool fuse_vy = fuseVelPosHeight(innov(1), innov_var(1), 1);
 
-		return true;
+		return fuse_vx && fuse_vy;
 
 	} else {
-		_last_fail_hvel_innov(0) = innov(0);
-		_last_fail_hvel_innov(1) = innov(1);
 		_innov_check_fail_status.flags.reject_hor_vel = true;
 		return false;
 	}
 }
 
-bool Ekf::fuseVerticalVelocity(const Vector3f &innov, const Vector2f &innov_gate, const Vector3f &obs_var,
+bool Ekf::fuseVerticalVelocity(const Vector3f &innov, const float innov_gate, const Vector3f &obs_var,
 			       Vector3f &innov_var, Vector2f &test_ratio)
 {
-
 	innov_var(2) = P(6, 6) + obs_var(2);
-	test_ratio(1) = sq(innov(2)) / (sq(innov_gate(1)) * innov_var(2));
+	test_ratio(1) = sq(innov(2)) / (sq(innov_gate) * innov_var(2));
 	_vert_vel_innov_ratio = innov(2) / sqrtf(innov_var(2));
 	_vert_vel_fuse_time_us = _time_last_imu;
 	bool innov_check_pass = (test_ratio(1) <= 1.0f);
@@ -86,8 +81,8 @@ bool Ekf::fuseVerticalVelocity(const Vector3f &innov, const Vector2f &innov_gate
 	// but limit innovation to prevent spikes that could destabilise the filter
 	float innovation;
 
-	if (_bad_vert_accel_detected && !innov_check_pass) {
-		const float innov_limit = innov_gate(1) * sqrtf(innov_var(2));
+	if (_fault_status.flags.bad_acc_vertical && !innov_check_pass) {
+		const float innov_limit = innov_gate * sqrtf(innov_var(2));
 		innovation = math::constrain(innov(2), -innov_limit, innov_limit);
 		innov_check_pass = true;
 
@@ -96,12 +91,9 @@ bool Ekf::fuseVerticalVelocity(const Vector3f &innov, const Vector2f &innov_gate
 	}
 
 	if (innov_check_pass) {
-		_time_last_ver_vel_fuse = _time_last_imu;
 		_innov_check_fail_status.flags.reject_ver_vel = false;
 
-		fuseVelPosHeight(innovation, innov_var(2), 2);
-
-		return true;
+		return fuseVelPosHeight(innovation, innov_var(2), 2);
 
 	} else {
 		_innov_check_fail_status.flags.reject_ver_vel = true;
@@ -109,36 +101,24 @@ bool Ekf::fuseVerticalVelocity(const Vector3f &innov, const Vector2f &innov_gate
 	}
 }
 
-bool Ekf::fuseHorizontalPosition(const Vector3f &innov, const Vector2f &innov_gate, const Vector3f &obs_var,
-				 Vector3f &innov_var, Vector2f &test_ratio, bool inhibit_gate)
+bool Ekf::fuseHorizontalPosition(const Vector3f &innov, const float innov_gate, const Vector3f &obs_var,
+				 Vector3f &innov_var, Vector2f &test_ratio)
 {
 
 	innov_var(0) = P(7, 7) + obs_var(0);
 	innov_var(1) = P(8, 8) + obs_var(1);
-	test_ratio(0) = fmaxf(sq(innov(0)) / (sq(innov_gate(0)) * innov_var(0)),
-			      sq(innov(1)) / (sq(innov_gate(0)) * innov_var(1)));
+	test_ratio(0) = fmaxf(sq(innov(0)) / (sq(innov_gate) * innov_var(0)),
+			      sq(innov(1)) / (sq(innov_gate) * innov_var(1)));
 
 	const bool innov_check_pass = test_ratio(0) <= 1.0f;
 
-	if (innov_check_pass || inhibit_gate) {
-		if (inhibit_gate && test_ratio(0) > sq(100.0f / innov_gate(0))) {
-			// always protect against extreme values that could result in a NaN
-			return false;
-		}
-
-		if (!_fuse_hpos_as_odom) {
-			_time_last_hor_pos_fuse = _time_last_imu;
-
-		} else {
-			_time_last_delpos_fuse = _time_last_imu;
-		}
-
+	if (innov_check_pass) {
 		_innov_check_fail_status.flags.reject_hor_pos = false;
 
-		fuseVelPosHeight(innov(0), innov_var(0), 3);
-		fuseVelPosHeight(innov(1), innov_var(1), 4);
+		bool fuse_x = fuseVelPosHeight(innov(0), innov_var(0), 3);
+		bool fuse_y = fuseVelPosHeight(innov(1), innov_var(1), 4);
 
-		return true;
+		return fuse_x && fuse_y;
 
 	} else {
 		_innov_check_fail_status.flags.reject_hor_pos = true;
@@ -146,35 +126,32 @@ bool Ekf::fuseHorizontalPosition(const Vector3f &innov, const Vector2f &innov_ga
 	}
 }
 
-bool Ekf::fuseVerticalPosition(const Vector3f &innov, const Vector2f &innov_gate, const Vector3f &obs_var,
-			       Vector3f &innov_var, Vector2f &test_ratio)
+bool Ekf::fuseVerticalPosition(const float innov, const float innov_gate, const float obs_var,
+			       float &innov_var, float &test_ratio)
 {
-
-	innov_var(2) = P(9, 9) + obs_var(2);
-	test_ratio(1) = sq(innov(2)) / (sq(innov_gate(1)) * innov_var(2));
-	_vert_pos_innov_ratio = innov(2) / sqrtf(innov_var(2));
+	innov_var = P(9, 9) + obs_var;
+	test_ratio = sq(innov) / (sq(innov_gate) * innov_var);
+	_vert_pos_innov_ratio = innov / sqrtf(innov_var);
 	_vert_pos_fuse_attempt_time_us = _time_last_imu;
-	bool innov_check_pass = test_ratio(1) <= 1.0f;
+	bool innov_check_pass = test_ratio <= 1.0f;
 
 	// if there is bad vertical acceleration data, then don't reject measurement,
 	// but limit innovation to prevent spikes that could destabilise the filter
 	float innovation;
 
-	if (_bad_vert_accel_detected && !innov_check_pass) {
-		const float innov_limit = innov_gate(1) * sqrtf(innov_var(2));
-		innovation = math::constrain(innov(2), -innov_limit, innov_limit);
+	if (_fault_status.flags.bad_acc_vertical && !innov_check_pass) {
+		const float innov_limit = innov_gate * sqrtf(innov_var);
+		innovation = math::constrain(innov, -innov_limit, innov_limit);
 		innov_check_pass = true;
 
 	} else {
-		innovation = innov(2);
+		innovation = innov;
 	}
 
 	if (innov_check_pass) {
-		_time_last_hgt_fuse = _time_last_imu;
 		_innov_check_fail_status.flags.reject_ver_pos = false;
-		fuseVelPosHeight(innovation, innov_var(2), 5);
 
-		return true;
+		return fuseVelPosHeight(innovation, innov_var, 5);
 
 	} else {
 		_innov_check_fail_status.flags.reject_ver_pos = true;
@@ -183,9 +160,8 @@ bool Ekf::fuseVerticalPosition(const Vector3f &innov, const Vector2f &innov_gate
 }
 
 // Helper function that fuses a single velocity or position measurement
-void Ekf::fuseVelPosHeight(const float innov, const float innov_var, const int obs_index)
+bool Ekf::fuseVelPosHeight(const float innov, const float innov_var, const int obs_index)
 {
-
 	Vector24f Kfusion;  // Kalman gain vector for any single observation - sequential fusion is used.
 	const unsigned state_index = obs_index + 4;  // we start with vx and this is the 4. state
 
@@ -215,7 +191,7 @@ void Ekf::fuseVelPosHeight(const float innov, const float innov_var, const int o
 		}
 	}
 
-	setVelPosFaultStatus(obs_index, !healthy);
+	setVelPosStatus(obs_index, healthy);
 
 	if (healthy) {
 		// apply the covariance corrections
@@ -225,27 +201,80 @@ void Ekf::fuseVelPosHeight(const float innov, const float innov_var, const int o
 
 		// apply the state corrections
 		fuse(Kfusion, innov);
+
+		return true;
 	}
+
+	return false;
 }
 
-void Ekf::setVelPosFaultStatus(const int index, const bool status)
+void Ekf::setVelPosStatus(const int index, const bool healthy)
 {
-	if (index == 0) {
-		_fault_status.flags.bad_vel_N = status;
+	switch (index) {
+	case 0:
+		if (healthy) {
+			_fault_status.flags.bad_vel_N = false;
+			_time_last_hor_vel_fuse = _time_last_imu;
 
-	} else if (index == 1) {
-		_fault_status.flags.bad_vel_E = status;
+		} else {
+			_fault_status.flags.bad_vel_N = true;
+		}
 
-	} else if (index == 2) {
-		_fault_status.flags.bad_vel_D = status;
+		break;
 
-	} else if (index == 3) {
-		_fault_status.flags.bad_pos_N = status;
+	case 1:
+		if (healthy) {
+			_fault_status.flags.bad_vel_E = false;
+			_time_last_hor_vel_fuse = _time_last_imu;
 
-	} else if (index == 4) {
-		_fault_status.flags.bad_pos_E = status;
+		} else {
+			_fault_status.flags.bad_vel_E = true;
+		}
 
-	} else if (index == 5) {
-		_fault_status.flags.bad_pos_D = status;
+		break;
+
+	case 2:
+		if (healthy) {
+			_fault_status.flags.bad_vel_D = false;
+			_time_last_ver_vel_fuse = _time_last_imu;
+
+		} else {
+			_fault_status.flags.bad_vel_D = true;
+		}
+
+		break;
+
+	case 3:
+		if (healthy) {
+			_fault_status.flags.bad_pos_N = false;
+			_time_last_hor_pos_fuse = _time_last_imu;
+
+		} else {
+			_fault_status.flags.bad_pos_N = true;
+		}
+
+		break;
+
+	case 4:
+		if (healthy) {
+			_fault_status.flags.bad_pos_E = false;
+			_time_last_hor_pos_fuse = _time_last_imu;
+
+		} else {
+			_fault_status.flags.bad_pos_E = true;
+		}
+
+		break;
+
+	case 5:
+		if (healthy) {
+			_fault_status.flags.bad_pos_D = false;
+			_time_last_hgt_fuse = _time_last_imu;
+
+		} else {
+			_fault_status.flags.bad_pos_D = true;
+		}
+
+		break;
 	}
 }

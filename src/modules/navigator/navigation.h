@@ -48,8 +48,10 @@
 #  define NUM_MISSIONS_SUPPORTED 50
 #elif defined(__PX4_POSIX)
 #  define NUM_MISSIONS_SUPPORTED (UINT16_MAX-1) // This is allocated as needed.
+#elif defined(RAM_BASED_MISSIONS)
+#  define NUM_MISSIONS_SUPPORTED 500
 #else
-#  define NUM_MISSIONS_SUPPORTED 2000 // This allocates a file of around 181 kB on the SD card.
+#  define NUM_MISSIONS_SUPPORTED 500
 #endif
 
 #define NAV_EPSILON_POSITION	0.001f	/**< Anything smaller than this is considered zero */
@@ -64,7 +66,6 @@ enum NAV_CMD {
 	NAV_CMD_LAND = 21,
 	NAV_CMD_TAKEOFF = 22,
 	NAV_CMD_LOITER_TO_ALT = 31,
-	NAV_CMD_DO_FOLLOW_REPOSITION = 33,
 	NAV_CMD_VTOL_TAKEOFF = 84,
 	NAV_CMD_VTOL_LAND = 85,
 	NAV_CMD_DELAY = 93,

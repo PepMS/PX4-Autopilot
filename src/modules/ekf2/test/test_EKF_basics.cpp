@@ -53,7 +53,12 @@ public:
 	// Setup the Ekf with synthetic measurements
 	void SetUp() override
 	{
+		// run briefly to init, then manually set in air and at rest (default for a real vehicle)
 		_ekf->init(0);
+		_sensor_simulator.runSeconds(0.1);
+		_ekf->set_in_air_status(false);
+		_ekf->set_vehicle_at_rest(true);
+
 		_sensor_simulator.runSeconds(_init_duration_s);
 	}
 
@@ -67,7 +72,7 @@ public:
 	SensorSimulator _sensor_simulator;
 
 	// Duration of initalization with only providing baro,mag and IMU
-	const uint32_t _init_duration_s{4};
+	const uint32_t _init_duration_s{5};
 
 protected:
 	double _latitude  {0.0};

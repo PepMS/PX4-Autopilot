@@ -49,7 +49,7 @@ class FlightTaskManualAltitude : public FlightTask
 public:
 	FlightTaskManualAltitude();
 	virtual ~FlightTaskManualAltitude() = default;
-	bool activate(const vehicle_local_position_setpoint_s &last_setpoint) override;
+	bool activate(const trajectory_setpoint_s &last_setpoint) override;
 	bool updateInitialize() override;
 	bool update() override;
 
@@ -134,8 +134,6 @@ private:
 
 	float _yawspeed_filter_state{}; /**< state of low-pass filter in rad/s */
 	uint8_t _reset_counter = 0; /**< counter for estimator resets in z-direction */
-	float _max_speed_up = 10.0f;
-	float _max_speed_down = 1.0f;
 	bool _terrain_follow{false}; /**< true when the vehicle is following the terrain height */
 	bool _terrain_hold{false}; /**< true when vehicle is controlling height above a static ground position */
 

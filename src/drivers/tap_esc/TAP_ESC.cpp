@@ -1,6 +1,6 @@
 /****************************************************************************
  *
- *   Copyright (c) 2018-2021 PX4 Development Team. All rights reserved.
+ *   Copyright (c) 2018-2022 PX4 Development Team. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -32,6 +32,8 @@
  ****************************************************************************/
 
 #include "TAP_ESC.hpp"
+
+#include <px4_platform_common/sem.hpp>
 
 TAP_ESC::TAP_ESC(char const *const device, uint8_t channels_count):
 	CDev(TAP_ESC_DEVICE_PATH),
@@ -288,6 +290,8 @@ bool TAP_ESC::updateOutputs(bool stop_motors, uint16_t outputs[MAX_ACTUATORS], u
 
 				if (feed_back_data.channelID < esc_status_s::CONNECTED_ESC_MAX) {
 					_esc_feedback.esc[feed_back_data.channelID].timestamp = hrt_absolute_time();
+					_esc_feedback.esc[feed_back_data.channelID].actuator_function = (uint8_t)_mixing_output.outputFunction(
+								feed_back_data.channelID);
 					_esc_feedback.esc[feed_back_data.channelID].esc_errorcount = 0;
 					_esc_feedback.esc[feed_back_data.channelID].esc_rpm = feed_back_data.speed;
 #if defined(ESC_HAVE_VOLTAGE_SENSOR)
@@ -333,6 +337,8 @@ void TAP_ESC::Run()
 		return;
 	}
 
+	SmartLock lock_guard(_lock);
+
 	// push backup schedule
 	ScheduleDelayed(20_ms);
 
@@ -365,31 +371,26 @@ void TAP_ESC::Run()
 			if (_tune_control_sub.copy(&tune)) {
 				if (tune.timestamp > 0) {
 					Tunes::ControlResult result = _tunes.set_control(tune);
-					_play_tone = (result == Tunes::ControlResult::Success) || (result == Tunes::ControlResult::AlreadyPlaying);
-					PX4_DEBUG("new tune id: %d, result: %d, play: %d", tune.tune_id, (int)result, _play_tone);
+					PX4_DEBUG("new tune id: %d, result: %d, duration: %lu", tune.tune_id, (int)result, tune.duration);
 				}
 			}
 		}
 
 		const hrt_abstime timestamp_now = hrt_absolute_time();
 
-		if ((timestamp_now - _interval_timestamp <= _duration) || !_play_tone) {
-			//return;
-		} else {
+		if ((timestamp_now - _interval_timestamp > _duration)) {
 			_interval_timestamp = timestamp_now;
 
 			if (_silence_length > 0) {
 				_duration = _silence_length;
 				_silence_length = 0;
 
-			} else if (_play_tone) {
+			} else {
 				uint8_t strength = 0;
 				Tunes::Status parse_ret_val = _tunes.get_next_note(_frequency, _duration, _silence_length, strength);
 
 				if (parse_ret_val == Tunes::Status::Continue) {
 					// Continue playing.
-					_play_tone = true;
-
 					if (_frequency > 0) {
 						// Start playing the note.
 						EscbusTunePacket esc_tune_packet{};
@@ -400,7 +401,6 @@ void TAP_ESC::Run()
 					}
 
 				} else {
-					_play_tone = false;
 					_silence_length = 0;
 				}
 			}
@@ -415,19 +415,19 @@ void TAP_ESC::Run()
 
 int TAP_ESC::ioctl(device::file_t *filp, int cmd, unsigned long arg)
 {
-	int ret = OK;
+	SmartLock lock_guard(_lock);
 
-	lock();
+	int ret = OK;
 
 	switch (cmd) {
 	case MIXERIOCRESET:
-		_mixing_output.resetMixerThreadSafe();
+		_mixing_output.resetMixer();
 		break;
 
 	case MIXERIOCLOADBUF: {
 			const char *buf = (const char *)arg;
 			unsigned buflen = strlen(buf);
-			ret = _mixing_output.loadMixerThreadSafe(buf, buflen);
+			ret = _mixing_output.loadMixer(buf, buflen);
 			break;
 		}
 
@@ -436,8 +436,6 @@ int TAP_ESC::ioctl(device::file_t *filp, int cmd, unsigned long arg)
 		ret = -ENOTTY;
 		break;
 	}
-
-	unlock();
 
 	return ret;
 }

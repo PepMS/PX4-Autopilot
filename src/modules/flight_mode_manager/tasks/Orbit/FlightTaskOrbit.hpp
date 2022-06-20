@@ -44,13 +44,12 @@
 #include "FlightTaskManualAltitudeSmoothVel.hpp"
 #include <uORB/PublicationMulti.hpp>
 #include <uORB/topics/orbit_status.h>
-#include "StraightLine.hpp"
 #include <lib/slew_rate/SlewRateYaw.hpp>
 #include <lib/motion_planning/PositionSmoothing.hpp>
 #include <lib/motion_planning/VelocitySmoothing.hpp>
 
 
-class FlightTaskOrbit : public FlightTaskManualAltitude
+class FlightTaskOrbit : public FlightTaskManualAltitudeSmoothVel
 {
 public:
 
@@ -58,7 +57,7 @@ public:
 	virtual ~FlightTaskOrbit() = default;
 
 	bool applyCommandParameters(const vehicle_command_s &command) override;
-	bool activate(const vehicle_local_position_setpoint_s &last_setpoint) override;
+	bool activate(const trajectory_setpoint_s &last_setpoint) override;
 	bool update() override;
 
 protected:
@@ -71,7 +70,7 @@ protected:
 private:
 	/* TODO: Should be controlled by params */
 	static constexpr float _radius_min = 1.f;
-	static constexpr float _radius_max = 100.f;
+	static constexpr float _radius_max = 1e3f;
 	static constexpr float _velocity_max = 10.f;
 	static constexpr float _acceleration_max = 2.f;
 	static constexpr float _horizontal_acceptance_radius = 2.f;
@@ -107,6 +106,8 @@ private:
 	 */
 	bool _is_position_on_circle() const;
 
+	/** Adjusts radius and speed according to stick input */
+	void _adjustParametersByStick();
 	/** generates setpoints to smoothly reach the closest point on the circle when starting from far away */
 	void _generate_circle_approach_setpoints();
 	/** generates xy setpoints to make the vehicle orbit */
@@ -119,16 +120,15 @@ private:
 	matrix::Vector3f _center; /**< local frame coordinates of the center point */
 
 	bool _in_circle_approach = false;
-	Vector3f _circle_approach_start_position;
 	PositionSmoothing _position_smoothing;
-	VelocitySmoothing _altitude_velocity_smoothing;
-	Vector3f _unsmoothed_velocity_setpoint;
 
 	/** yaw behaviour during the orbit flight according to MAVLink's ORBIT_YAW_BEHAVIOUR enum */
 	int _yaw_behaviour = orbit_status_s::ORBIT_YAW_BEHAVIOUR_HOLD_FRONT_TO_CIRCLE_CENTER;
+	bool _started_clockwise{true};
 	float _initial_heading = 0.f; /**< the heading of the drone when the orbit command was issued */
 	SlewRateYaw<float> _slew_rate_yaw;
 
+	orb_advert_t _mavlink_log_pub{nullptr};
 	uORB::PublicationMulti<orbit_status_s> _orbit_status_pub{ORB_ID(orbit_status)};
 
 	DEFINE_PARAMETERS(
@@ -141,6 +141,8 @@ private:
 		(ParamFloat<px4::params::MPC_ACC_HOR>) _param_mpc_acc_hor, // acceleration in flight
 		(ParamFloat<px4::params::MPC_JERK_AUTO>) _param_mpc_jerk_auto,
 		(ParamFloat<px4::params::MPC_ACC_UP_MAX>) _param_mpc_acc_up_max,
-		(ParamFloat<px4::params::MPC_ACC_DOWN_MAX>) _param_mpc_acc_down_max
+		(ParamFloat<px4::params::MPC_ACC_DOWN_MAX>) _param_mpc_acc_down_max,
+		(ParamFloat<px4::params::MPC_Z_V_AUTO_UP>) _param_mpc_z_v_auto_up,
+		(ParamFloat<px4::params::MPC_Z_V_AUTO_DN>) _param_mpc_z_v_auto_dn
 	)
 };

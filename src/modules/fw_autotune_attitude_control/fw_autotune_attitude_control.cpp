@@ -47,6 +47,7 @@ FwAutotuneAttitudeControl::FwAutotuneAttitudeControl(bool is_vtol) :
 	_actuator_controls_sub(this, is_vtol ? ORB_ID(actuator_controls_1) : ORB_ID(actuator_controls_0)),
 	_actuator_controls_status_sub(is_vtol ? ORB_ID(actuator_controls_status_1) : ORB_ID(actuator_controls_status_0))
 {
+	_autotune_attitude_control_status_pub.advertise();
 	reset();
 }
 
@@ -58,7 +59,7 @@ FwAutotuneAttitudeControl::~FwAutotuneAttitudeControl()
 bool FwAutotuneAttitudeControl::init()
 {
 	if (!_parameter_update_sub.registerCallback()) {
-		PX4_ERR("parameter_update callback registration failed!");
+		PX4_ERR("callback registration failed");
 		return false;
 	}
 
@@ -433,7 +434,7 @@ void FwAutotuneAttitudeControl::updateStateMachine(hrt_abstime now)
 bool FwAutotuneAttitudeControl::registerActuatorControlsCallback()
 {
 	if (!_actuator_controls_sub.registerCallback()) {
-		PX4_ERR("actuator_controls callback registration failed!");
+		PX4_ERR("callback registration failed");
 		return false;
 	}
 

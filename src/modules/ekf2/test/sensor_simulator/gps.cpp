@@ -30,7 +30,7 @@ void Gps::send(const uint64_t time)
 	_ekf->setGpsData(_gps_data);
 }
 
-void Gps::setData(const gps_message &gps)
+void Gps::setData(const gpsMessage &gps)
 {
 	_gps_data = gps;
 }
@@ -98,19 +98,19 @@ void Gps::stepHorizontalPositionByMeters(const Vector2f hpos_change)
 	double lat_new {0.0};
 	double lon_new {0.0};
 
-	map_projection_project(&_ekf->global_origin(), _gps_data.lat * 1e-7, _gps_data.lon * 1e-7, &hposN_curr, &hposE_curr);
+	_ekf->global_origin().project(_gps_data.lat * 1e-7, _gps_data.lon * 1e-7, hposN_curr, hposE_curr);
 
 	Vector2f hpos_new = Vector2f{hposN_curr, hposE_curr} + hpos_change;
 
-	map_projection_reproject(&_ekf->global_origin(), hpos_new(0), hpos_new(1), &lat_new, &lon_new);
+	_ekf->global_origin().reproject(hpos_new(0), hpos_new(1), lat_new, lon_new);
 
 	_gps_data.lon = static_cast<int32_t>(lon_new * 1e7);
 	_gps_data.lat = static_cast<int32_t>(lat_new * 1e7);
 }
 
-gps_message Gps::getDefaultGpsData()
+gpsMessage Gps::getDefaultGpsData()
 {
-	gps_message gps_data{};
+	gpsMessage gps_data{};
 	gps_data.time_usec = 0;
 	gps_data.lat = 473566094;
 	gps_data.lon = 85190237;

@@ -40,7 +40,7 @@
 # * Common functions should be included in px_base.cmake.
 #
 # * OS/ board specific fucntions should be include in
-#	px_impl_${PX4_PLATFORM}.cmake or px4_impl_${PX4_PLATFORM}_${PX4_BOARD}.cmake.
+#	px_impl_${PX4_PLATFORM}.cmake
 #
 # Formatting
 # ---------------------------------------------------------------------------
@@ -99,10 +99,10 @@
 #
 #=============================================================================
 
-cmake_minimum_required(VERSION 3.2 FATAL_ERROR)
+cmake_minimum_required(VERSION 3.9 FATAL_ERROR)
 
-set(PX4_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
-set(PX4_BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}")
+set(PX4_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}" CACHE FILEPATH "PX4 source directory" FORCE)
+set(PX4_BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}" CACHE FILEPATH "PX4 binary directory" FORCE)
 
 list(APPEND CMAKE_MODULE_PATH ${PX4_SOURCE_DIR}/cmake)
 include(px4_parse_function_args)
@@ -125,6 +125,11 @@ define_property(GLOBAL PROPERTY PX4_MODULE_LIBRARIES
                  FULL_DOCS "List of all PX4 module libraries"
                  )
 
+define_property(GLOBAL PROPERTY PX4_KERNEL_MODULE_LIBRARIES
+                 BRIEF_DOCS "PX4 kernel side module libs"
+                 FULL_DOCS "List of all PX4 kernel module libraries"
+                 )
+
 define_property(GLOBAL PROPERTY PX4_MODULE_PATHS
                  BRIEF_DOCS "PX4 module paths"
                  FULL_DOCS "List of paths to all PX4 modules"
@@ -142,6 +147,7 @@ set(CONFIG "px4_sitl_default" CACHE STRING "desired configuration")
 
 include(px4_add_module)
 set(config_module_list)
+set(config_kernel_list)
 
 # Find Python
 # If using catkin, Python 2 is found since it points
@@ -227,6 +233,14 @@ message(STATUS "cmake build type: ${CMAKE_BUILD_TYPE}")
 # project definition
 #
 project(px4 CXX C ASM)
+
+# Check if LTO option and check if toolchain supports it
+if(LTO)
+    include(CheckIPOSupported)
+    check_ipo_supported()
+    message(AUTHOR_WARNING "LTO enabled: LTO is highly experimental and should not be used in production")
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
+endif()
 
 set(package-contact "px4users@googlegroups.com")
 
@@ -406,6 +420,7 @@ endif()
 # subdirectories
 #
 add_library(parameters_interface INTERFACE)
+add_library(kernel_parameters_interface INTERFACE)
 
 include(px4_add_library)
 add_subdirectory(src/lib EXCLUDE_FROM_ALL)
@@ -423,10 +438,18 @@ endforeach()
 
 # add events lib after modules and libs as it needs to know all source files (PX4_SRC_FILES)
 add_subdirectory(src/lib/events EXCLUDE_FROM_ALL)
+# metadata needs PX4_MODULE_CONFIG_FILES
+add_subdirectory(src/lib/metadata EXCLUDE_FROM_ALL)
 
 # must be the last module before firmware
 add_subdirectory(src/lib/parameters EXCLUDE_FROM_ALL)
+
+if(${PX4_PLATFORM} STREQUAL "nuttx" AND NOT CONFIG_BUILD_FLAT)
+target_link_libraries(parameters_interface INTERFACE usr_parameters)
+target_link_libraries(kernel_parameters_interface INTERFACE parameters)
+else()
 target_link_libraries(parameters_interface INTERFACE parameters)
+endif()
 
 # firmware added last to generate the builtin for included modules
 add_subdirectory(platforms/${PX4_PLATFORM})

@@ -87,8 +87,8 @@ public:
 	airspeed_wind_s get_wind_estimator_states(uint64_t timestamp);
 
 	// setters wind estimator parameters
-	void set_wind_estimator_wind_p_noise(float wind_sigma) { _wind_estimator.set_wind_p_noise(wind_sigma); }
-	void set_wind_estimator_tas_scale_p_noise(float tas_scale_sigma) { _wind_estimator.set_tas_scale_p_noise(tas_scale_sigma); }
+	void set_wind_estimator_wind_process_noise_spectral_density(float wind_nsd) { _wind_estimator.set_wind_process_noise_spectral_density(wind_nsd); }
+	void set_wind_estimator_tas_scale_process_noise_spectral_density(float tas_scale_nsd) { _wind_estimator.set_tas_scale_process_noise_spectral_density(tas_scale_nsd); }
 	void set_wind_estimator_tas_scale_init(float tas_scale_init)
 	{
 		_tas_scale_init = tas_scale_init;
@@ -98,7 +98,6 @@ public:
 	void set_wind_estimator_beta_noise(float beta_var) { _wind_estimator.set_beta_noise(beta_var); }
 	void set_wind_estimator_tas_gate(uint8_t gate_size)
 	{
-		_tas_gate = gate_size;
 		_wind_estimator.set_tas_gate(gate_size);
 	}
 
@@ -147,7 +146,6 @@ private:
 	static constexpr uint64_t DATA_STUCK_TIMEOUT{2_s}; ///< timeout after which data stuck check triggers when data is flat
 
 	// states of innovation check
-	float _tas_gate{1.0f}; ///< gate size of airspeed innovation (to calculate tas_test_ratio)
 	bool _innovations_check_failed{false};  ///< true when airspeed innovations have failed consistency checks
 	float _tas_innov_threshold{1.0}; ///< innovation error threshold for triggering innovation check failure
 	float _tas_innov_integ_threshold{-1.0}; ///< integrator innovation error threshold for triggering innovation check failure

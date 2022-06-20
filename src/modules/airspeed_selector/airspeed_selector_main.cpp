@@ -165,8 +165,8 @@ private:
 	};
 
 	DEFINE_PARAMETERS(
-		(ParamFloat<px4::params::ASPD_W_P_NOISE>) _param_west_w_p_noise,
-		(ParamFloat<px4::params::ASPD_SC_P_NOISE>) _param_west_sc_p_noise,
+		(ParamFloat<px4::params::ASPD_WIND_NSD>) _param_aspd_wind_nsd,
+		(ParamFloat<px4::params::ASPD_SCALE_NSD>) _param_aspd_scale_nsd,
 		(ParamFloat<px4::params::ASPD_TAS_NOISE>) _param_west_tas_noise,
 		(ParamFloat<px4::params::ASPD_BETA_NOISE>) _param_west_beta_noise,
 		(ParamInt<px4::params::ASPD_TAS_GATE>) _param_west_tas_gate,
@@ -205,6 +205,9 @@ AirspeedModule::AirspeedModule():
 	update_params();
 
 	_perf_elapsed = perf_alloc(PC_ELAPSED, MODULE_NAME": elapsed");
+	_airspeed_validated_pub.advertise();
+	_wind_est_pub[0].advertise();
+	_wind_est_pub[1].advertise();
 }
 
 AirspeedModule::~AirspeedModule()
@@ -444,16 +447,16 @@ void AirspeedModule::update_params()
 	_param_airspeed_scale[1] = _param_airspeed_scale_2.get();
 	_param_airspeed_scale[2] = _param_airspeed_scale_3.get();
 
-	_wind_estimator_sideslip.set_wind_p_noise(_param_west_w_p_noise.get());
-	_wind_estimator_sideslip.set_tas_scale_p_noise(_param_west_sc_p_noise.get());
+	_wind_estimator_sideslip.set_wind_process_noise_spectral_density(_param_aspd_wind_nsd.get());
+	_wind_estimator_sideslip.set_tas_scale_process_noise_spectral_density(_param_aspd_scale_nsd.get());
 	_wind_estimator_sideslip.set_tas_noise(_param_west_tas_noise.get());
 	_wind_estimator_sideslip.set_beta_noise(_param_west_beta_noise.get());
 	_wind_estimator_sideslip.set_tas_gate(_param_west_tas_gate.get());
 	_wind_estimator_sideslip.set_beta_gate(_param_west_beta_gate.get());
 
 	for (int i = 0; i < MAX_NUM_AIRSPEED_SENSORS; i++) {
-		_airspeed_validator[i].set_wind_estimator_wind_p_noise(_param_west_w_p_noise.get());
-		_airspeed_validator[i].set_wind_estimator_tas_scale_p_noise(_param_west_sc_p_noise.get());
+		_airspeed_validator[i].set_wind_estimator_wind_process_noise_spectral_density(_param_aspd_wind_nsd.get());
+		_airspeed_validator[i].set_wind_estimator_tas_scale_process_noise_spectral_density(_param_aspd_scale_nsd.get());
 		_airspeed_validator[i].set_wind_estimator_tas_noise(_param_west_tas_noise.get());
 		_airspeed_validator[i].set_wind_estimator_beta_noise(_param_west_beta_noise.get());
 		_airspeed_validator[i].set_wind_estimator_tas_gate(_param_west_tas_gate.get());
@@ -510,7 +513,8 @@ void AirspeedModule::update_wind_estimator_sideslip()
 	// update wind and airspeed estimator
 	_wind_estimator_sideslip.update(_time_now_usec);
 
-	if (_vehicle_local_position_valid && !_vtol_vehicle_status.vtol_in_rw_mode) {
+	if (_vehicle_local_position_valid
+	    && _vtol_vehicle_status.vehicle_vtol_state == vtol_vehicle_status_s::VEHICLE_VTOL_STATE_FW) {
 		Vector3f vI(_vehicle_local_position.vx, _vehicle_local_position.vy, _vehicle_local_position.vz);
 		Quatf q(_vehicle_attitude.q);
 
@@ -592,9 +596,13 @@ void AirspeedModule::select_airspeed_and_publish()
 
 	// print warning or info, depending of whether airspeed got declared invalid or healthy
 	if (_valid_airspeed_index != _prev_airspeed_index &&
-	    (_number_of_airspeed_sensors > 0 || !_vehicle_land_detected.landed) &&
-	    _valid_airspeed_index != _prev_airspeed_index) {
-		if (_prev_airspeed_index > 0) {
+	    _number_of_airspeed_sensors > 0) {
+		if (_vehicle_status.arming_state != vehicle_status_s::ARMING_STATE_ARMED && _prev_airspeed_index > 0) {
+			mavlink_log_critical(&_mavlink_log_pub, "Airspeed sensor failure detected. Check connection and reboot.\t");
+			events::send(events::ID("airspeed_selector_sensor_failure_disarmed"), events::Log::Critical,
+				     "Airspeed sensor failure detected. Check connection and reboot");
+
+		} else if (_prev_airspeed_index > 0) {
 			mavlink_log_critical(&_mavlink_log_pub, "Airspeed sensor failure detected. Return to launch (RTL) is advised.\t");
 			events::send(events::ID("airspeed_selector_sensor_failure"), events::Log::Critical,
 				     "Airspeed sensor failure detected. Return to launch (RTL) is advised");

@@ -40,8 +40,8 @@
 #pragma once
 
 #include "FlightTaskManualPosition.hpp"
-#include "ManualVelocitySmoothingXY.hpp"
-#include "ManualVelocitySmoothingZ.hpp"
+#include <motion_planning/ManualVelocitySmoothingXY.hpp>
+#include <motion_planning/ManualVelocitySmoothingZ.hpp>
 
 using matrix::Vector2f;
 using matrix::Vector3f;
@@ -53,7 +53,7 @@ public:
 
 	virtual ~FlightTaskManualPositionSmoothVel() = default;
 
-	bool activate(const vehicle_local_position_setpoint_s &last_setpoint) override;
+	bool activate(const trajectory_setpoint_s &last_setpoint) override;
 	void reActivate() override;
 
 protected:

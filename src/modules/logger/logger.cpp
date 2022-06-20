@@ -97,19 +97,24 @@ static void timer_callback(void *arg)
 
 	timer_callback_data_s *data = (timer_callback_data_s *)arg;
 
-	if (watchdog_update(data->watchdog_data)) {
-		data->watchdog_triggered = true;
-	}
+	int semaphore_value = 0;
+
+	px4_sem_getvalue(&data->semaphore, &semaphore_value);
 
 	/* check the value of the semaphore: if the logger cannot keep up with running it's main loop as fast
 	 * as the timer_callback here increases the semaphore count, the counter would increase unbounded,
 	 * leading to an overflow at some point. This case we want to avoid here, so we check the current
 	 * value against a (somewhat arbitrary) threshold, and avoid calling sem_post() if it's exceeded.
 	 * (it's not a problem if the threshold is a bit too large, it just means the logger will do
-	 * multiple iterations at once, the next time it's scheduled). */
-	int semaphore_value;
+	 * multiple iterations at once, the next time it's scheduled).
+	 * As the watchdog also uses the counter we use a conservatively high value */
+	bool semaphore_value_saturated = semaphore_value > 100;
 
-	if (px4_sem_getvalue(&data->semaphore, &semaphore_value) == 0 && semaphore_value > 1) {
+	if (watchdog_update(data->watchdog_data, semaphore_value_saturated)) {
+		data->watchdog_triggered = true;
+	}
+
+	if (semaphore_value_saturated) {
 		return;
 	}
 
@@ -239,6 +244,7 @@ void Logger::print_statistics(LogType type)
 Logger *Logger::instantiate(int argc, char *argv[])
 {
 	uint32_t log_interval = 3500;
+	float rate_factor = 1.0f;
 	int log_buffer_size = 12 * 1024;
 	Logger::LogMode log_mode = Logger::LogMode::while_armed;
 	bool error_flag = false;
@@ -250,7 +256,7 @@ Logger *Logger::instantiate(int argc, char *argv[])
 	int ch;
 	const char *myoptarg = nullptr;
 
-	while ((ch = px4_getopt(argc, argv, "r:b:etfm:p:x", &myoptind, &myoptarg)) != EOF) {
+	while ((ch = px4_getopt(argc, argv, "r:b:etfm:p:xc:", &myoptind, &myoptarg)) != EOF) {
 		switch (ch) {
 		case 'r': {
 				unsigned long r = strtoul(myoptarg, nullptr, 10);
@@ -261,6 +267,10 @@ Logger *Logger::instantiate(int argc, char *argv[])
 
 				log_interval = 1e6 / r;
 			}
+			break;
+
+		case 'c':
+			rate_factor = strtof(myoptarg, nullptr);
 			break;
 
 		case 'x':
@@ -332,7 +342,8 @@ Logger *Logger::instantiate(int argc, char *argv[])
 		return nullptr;
 	}
 
-	Logger *logger = new Logger(backend, log_buffer_size, log_interval, poll_topic, log_mode, log_name_timestamp);
+	Logger *logger = new Logger(backend, log_buffer_size, log_interval, poll_topic, log_mode, log_name_timestamp,
+				    rate_factor);
 
 #if defined(DBGPRINT) && defined(__PX4_NUTTX)
 	struct mallinfo alloc_info = mallinfo();
@@ -360,13 +371,14 @@ Logger *Logger::instantiate(int argc, char *argv[])
 }
 
 Logger::Logger(LogWriter::Backend backend, size_t buffer_size, uint32_t log_interval, const char *poll_topic_name,
-	       LogMode log_mode, bool log_name_timestamp) :
+	       LogMode log_mode, bool log_name_timestamp, float rate_factor) :
 	ModuleParams(nullptr),
 	_log_mode(log_mode),
 	_log_name_timestamp(log_name_timestamp),
 	_event_subscription(ORB_ID::event),
 	_writer(backend, buffer_size),
-	_log_interval(log_interval)
+	_log_interval(log_interval),
+	_rate_factor(rate_factor)
 {
 	if (poll_topic_name) {
 		const orb_metadata *const *topics = orb_get_topics();
@@ -478,6 +490,7 @@ bool Logger::initialize_topics()
 	}
 
 	LoggedTopics logged_topics;
+	logged_topics.set_rate_factor(_rate_factor);
 
 	// initialize mission topics
 	logged_topics.initialize_mission_topics((MissionLogType)_param_sdlog_mission.get());
@@ -517,6 +530,10 @@ bool Logger::initialize_topics()
 			PX4_ERR("pthread_setschedparam failed (%i)", ret);
 		}
 	}
+
+	_num_excluded_optional_topic_ids = logged_topics.subscriptions().num_excluded_optional_topic_ids;
+	memcpy(_excluded_optional_topic_ids, logged_topics.subscriptions().excluded_optional_topic_ids,
+	       sizeof(_excluded_optional_topic_ids));
 
 	delete[](_subscriptions);
 	_subscriptions = nullptr;
@@ -584,7 +601,7 @@ void Logger::run()
 		max_msg_size = _event_subscription.get_topic()->o_size;
 	}
 
-	max_msg_size += sizeof(ulog_message_data_header_s);
+	max_msg_size += sizeof(ulog_message_data_s);
 
 	if (sizeof(ulog_message_logging_s) > (size_t)max_msg_size) {
 		max_msg_size = sizeof(ulog_message_logging_s);
@@ -728,9 +745,9 @@ void Logger::run()
 				 */
 				const bool try_to_subscribe = (sub_idx == next_subscribe_topic_index);
 
-				if (copy_if_updated(sub_idx, _msg_buffer + sizeof(ulog_message_data_header_s), try_to_subscribe)) {
+				if (copy_if_updated(sub_idx, _msg_buffer + sizeof(ulog_message_data_s), try_to_subscribe)) {
 					// each message consists of a header followed by an orb data object
-					const size_t msg_size = sizeof(ulog_message_data_header_s) + sub.get_topic()->o_size_no_padding;
+					const size_t msg_size = sizeof(ulog_message_data_s) + sub.get_topic()->o_size_no_padding;
 					const uint16_t write_msg_size = static_cast<uint16_t>(msg_size - ULOG_MSG_HEADER_LEN);
 					const uint16_t write_msg_id = sub.msg_id;
 
@@ -947,7 +964,7 @@ bool Logger::handle_event_updates(uint32_t &total_bytes)
 	bool data_written = false;
 
 	while (_event_subscription.updated()) {
-		event_s *orb_event = (event_s *)(_msg_buffer + sizeof(ulog_message_data_header_s));
+		event_s *orb_event = (event_s *)(_msg_buffer + sizeof(ulog_message_data_s));
 		_event_subscription.copy(orb_event);
 
 		// Important: we can only access single-byte values in orb_event (it's not necessarily aligned)
@@ -961,7 +978,7 @@ bool Logger::handle_event_updates(uint32_t &total_bytes)
 			updated_sequence -= _event_sequence_offset;
 			memcpy(&orb_event->event_sequence, &updated_sequence, sizeof(updated_sequence));
 
-			size_t msg_size = sizeof(ulog_message_data_header_s) + _event_subscription.get_topic()->o_size_no_padding;
+			size_t msg_size = sizeof(ulog_message_data_s) + _event_subscription.get_topic()->o_size_no_padding;
 			uint16_t write_msg_size = static_cast<uint16_t>(msg_size - ULOG_MSG_HEADER_LEN);
 			uint16_t write_msg_id = _event_subscription.msg_id;
 			//write one byte after another (because of alignment)
@@ -1399,6 +1416,7 @@ void Logger::start_log_file(LogType type)
 		write_parameter_defaults(type);
 		write_perf_data(true);
 		write_console_output();
+		write_excluded_optional_topics(type);
 	}
 
 	write_all_add_logged_msg(type);
@@ -1455,6 +1473,7 @@ void Logger::start_log_mavlink()
 	write_parameter_defaults(LogType::Full);
 	write_perf_data(true);
 	write_console_output();
+	write_excluded_optional_topics(LogType::Full);
 	write_all_add_logged_msg(LogType::Full);
 	_writer.set_need_reliable_transfer(false);
 	_writer.unselect_write_backend();
@@ -1815,14 +1834,14 @@ void Logger::write_add_logged_msg(LogType type, LoggerSubscription &subscription
 void Logger::write_info(LogType type, const char *name, const char *value)
 {
 	_writer.lock();
-	ulog_message_info_header_s msg = {};
+	ulog_message_info_s msg = {};
 	uint8_t *buffer = reinterpret_cast<uint8_t *>(&msg);
 	msg.msg_type = static_cast<uint8_t>(ULogMessageType::INFO);
 
 	/* construct format key (type and name) */
 	size_t vlen = strlen(value);
-	msg.key_len = snprintf(msg.key, sizeof(msg.key), "char[%zu] %s", vlen, name);
-	size_t msg_size = sizeof(msg) - sizeof(msg.key) + msg.key_len;
+	msg.key_len = snprintf(msg.key_value_str, sizeof(msg.key_value_str), "char[%zu] %s", vlen, name);
+	size_t msg_size = sizeof(msg) - sizeof(msg.key_value_str) + msg.key_len;
 
 	/* copy string value directly to buffer */
 	if (vlen < (sizeof(msg) - msg_size)) {
@@ -1840,15 +1859,15 @@ void Logger::write_info(LogType type, const char *name, const char *value)
 void Logger::write_info_multiple(LogType type, const char *name, const char *value, bool is_continued)
 {
 	_writer.lock();
-	ulog_message_info_multiple_header_s msg;
+	ulog_message_info_multiple_s msg;
 	uint8_t *buffer = reinterpret_cast<uint8_t *>(&msg);
 	msg.msg_type = static_cast<uint8_t>(ULogMessageType::INFO_MULTIPLE);
 	msg.is_continued = is_continued;
 
 	/* construct format key (type and name) */
 	size_t vlen = strlen(value);
-	msg.key_len = snprintf(msg.key, sizeof(msg.key), "char[%zu] %s", vlen, name);
-	size_t msg_size = sizeof(msg) - sizeof(msg.key) + msg.key_len;
+	msg.key_len = snprintf(msg.key_value_str, sizeof(msg.key_value_str), "char[%zu] %s", vlen, name);
+	size_t msg_size = sizeof(msg) - sizeof(msg.key_value_str) + msg.key_len;
 
 	/* copy string value directly to buffer */
 	if (vlen < (sizeof(msg) - msg_size)) {
@@ -1860,7 +1879,7 @@ void Logger::write_info_multiple(LogType type, const char *name, const char *val
 		write_message(type, buffer, msg_size);
 
 	} else {
-		PX4_ERR("info_multiple str too long (%" PRIu8 "), key=%s", msg.key_len, msg.key);
+		PX4_ERR("info_multiple str too long (%" PRIu8 "), key=%s", msg.key_len, msg.key_value_str);
 	}
 
 	_writer.unlock();
@@ -1881,13 +1900,13 @@ template<typename T>
 void Logger::write_info_template(LogType type, const char *name, T value, const char *type_str)
 {
 	_writer.lock();
-	ulog_message_info_header_s msg = {};
+	ulog_message_info_s msg = {};
 	uint8_t *buffer = reinterpret_cast<uint8_t *>(&msg);
 	msg.msg_type = static_cast<uint8_t>(ULogMessageType::INFO);
 
 	/* construct format key (type and name) */
-	msg.key_len = snprintf(msg.key, sizeof(msg.key), "%s %s", type_str, name);
-	size_t msg_size = sizeof(msg) - sizeof(msg.key) + msg.key_len;
+	msg.key_len = snprintf(msg.key_value_str, sizeof(msg.key_value_str), "%s %s", type_str, name);
+	size_t msg_size = sizeof(msg) - sizeof(msg.key_value_str) + msg.key_len;
 
 	/* copy string value directly to buffer */
 	memcpy(&buffer[msg_size], &value, sizeof(T));
@@ -1898,6 +1917,17 @@ void Logger::write_info_template(LogType type, const char *name, T value, const 
 	write_message(type, buffer, msg_size);
 
 	_writer.unlock();
+}
+
+void Logger::write_excluded_optional_topics(LogType type)
+{
+	for (int i = 0; i < _num_excluded_optional_topic_ids; ++i) {
+		orb_id_t meta = get_orb_meta((ORB_ID)_excluded_optional_topic_ids[i]);
+
+		if (meta) {
+			write_info_multiple(type, "excluded_optional_topics", meta->o_name, false);
+		}
+	}
 }
 
 void Logger::write_header(LogType type)
@@ -2014,7 +2044,7 @@ void Logger::write_version(LogType type)
 void Logger::write_parameter_defaults(LogType type)
 {
 	_writer.lock();
-	ulog_message_parameter_default_header_s msg = {};
+	ulog_message_parameter_default_s msg = {};
 	uint8_t *buffer = reinterpret_cast<uint8_t *>(&msg);
 
 	msg.msg_type = static_cast<uint8_t>(ULogMessageType::PARAMETER_DEFAULT);
@@ -2062,8 +2092,8 @@ void Logger::write_parameter_defaults(LogType type)
 			}
 
 			// format parameter key (type and name)
-			msg.key_len = snprintf(msg.key, sizeof(msg.key), "%s %s", type_str, param_name(param));
-			size_t msg_size = sizeof(msg) - sizeof(msg.key) + msg.key_len;
+			msg.key_len = snprintf(msg.key_value_str, sizeof(msg.key_value_str), "%s %s", type_str, param_name(param));
+			size_t msg_size = sizeof(msg) - sizeof(msg.key_value_str) + msg.key_len;
 
 			if (param_get_default_value(param, &default_value) != 0) {
 				continue;
@@ -2108,7 +2138,7 @@ void Logger::write_parameter_defaults(LogType type)
 void Logger::write_parameters(LogType type)
 {
 	_writer.lock();
-	ulog_message_parameter_header_s msg = {};
+	ulog_message_parameter_s msg = {};
 	uint8_t *buffer = reinterpret_cast<uint8_t *>(&msg);
 
 	msg.msg_type = static_cast<uint8_t>(ULogMessageType::PARAMETER);
@@ -2145,8 +2175,8 @@ void Logger::write_parameters(LogType type)
 			}
 
 			// format parameter key (type and name)
-			msg.key_len = snprintf(msg.key, sizeof(msg.key), "%s %s", type_str, param_name(param));
-			size_t msg_size = sizeof(msg) - sizeof(msg.key) + msg.key_len;
+			msg.key_len = snprintf(msg.key_value_str, sizeof(msg.key_value_str), "%s %s", type_str, param_name(param));
+			size_t msg_size = sizeof(msg) - sizeof(msg.key_value_str) + msg.key_len;
 
 			// copy parameter value directly to buffer
 			switch (ptype) {
@@ -2177,7 +2207,7 @@ void Logger::write_parameters(LogType type)
 void Logger::write_changed_parameters(LogType type)
 {
 	_writer.lock();
-	ulog_message_parameter_header_s msg = {};
+	ulog_message_parameter_s msg = {};
 	uint8_t *buffer = reinterpret_cast<uint8_t *>(&msg);
 
 	msg.msg_type = static_cast<uint8_t>(ULogMessageType::PARAMETER);
@@ -2215,8 +2245,8 @@ void Logger::write_changed_parameters(LogType type)
 			}
 
 			// format parameter key (type and name)
-			msg.key_len = snprintf(msg.key, sizeof(msg.key), "%s %s", type_str, param_name(param));
-			size_t msg_size = sizeof(msg) - sizeof(msg.key) + msg.key_len;
+			msg.key_len = snprintf(msg.key_value_str, sizeof(msg.key_value_str), "%s %s", type_str, param_name(param));
+			size_t msg_size = sizeof(msg) - sizeof(msg.key_value_str) + msg.key_len;
 
 			// copy parameter value directly to buffer
 			switch (ptype) {
@@ -2310,6 +2340,7 @@ $ logger on
 	PRINT_MODULE_USAGE_PARAM_INT('b', 12, 4, 10000, "Log buffer size in KiB", true);
 	PRINT_MODULE_USAGE_PARAM_STRING('p', nullptr, "<topic_name>",
 					 "Poll on a topic instead of running with fixed rate (Log rate and topic intervals are ignored if this is set)", true);
+	PRINT_MODULE_USAGE_PARAM_FLOAT('c', 1.0, 0.2, 2.0, "Log rate factor (higher is faster)", true);
 	PRINT_MODULE_USAGE_COMMAND_DESCR("on", "start logging now, override arming (logger must be running)");
 	PRINT_MODULE_USAGE_COMMAND_DESCR("off", "stop logging now, override arming (logger must be running)");
 	PRINT_MODULE_USAGE_DEFAULT_COMMANDS();

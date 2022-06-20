@@ -23,7 +23,6 @@ void EKFGSF_yaw::update(const imuSample &imu_sample,
 	_delta_vel = imu_sample.delta_vel;
 	_delta_ang_dt = imu_sample.delta_ang_dt;
 	_delta_vel_dt = imu_sample.delta_vel_dt;
-	_run_ekf_gsf = run_EKF;
 	_true_airspeed = airspeed;
 
 	// to reduce effect of vibration, filter using an LPF whose time constant is 1/10 of the AHRS tilt correction time constant
@@ -60,7 +59,7 @@ void EKFGSF_yaw::update(const imuSample &imu_sample,
 	}
 
 	// The 3-state EKF models only run when flying to avoid corrupted estimates due to operator handling and GPS interference
-	if (_run_ekf_gsf && _vel_data_updated) {
+	if (run_EKF && _vel_data_updated) {
 		if (!_ekf_gsf_vel_fuse_started) {
 			initialiseEKFGSF();
 			ahrsAlignYaw();
@@ -111,7 +110,7 @@ void EKFGSF_yaw::update(const imuSample &imu_sample,
 			}
 		}
 
-	} else if (_ekf_gsf_vel_fuse_started && !_run_ekf_gsf) {
+	} else if (_ekf_gsf_vel_fuse_started && !run_EKF) {
 		// wait to fly again
 		_ekf_gsf_vel_fuse_started = false;
 	}
@@ -245,10 +244,7 @@ void EKFGSF_yaw::predictEKF(const uint8_t model_index)
 	}
 
 	// Calculate the yaw state using a projection onto the horizontal that avoids gimbal lock
-	const Dcmf &R = _ahrs_ekf_gsf[model_index].R;
-	_ekf_gsf[model_index].X(2) = shouldUse321RotationSequence(R) ?
-				     getEuler321Yaw(R) :
-				     getEuler312Yaw(R);
+	_ekf_gsf[model_index].X(2) = getEulerYaw(_ahrs_ekf_gsf[model_index].R);
 
 	// calculate delta velocity in a horizontal front-right frame
 	const Vector3f del_vel_NED = _ahrs_ekf_gsf[model_index].R * _delta_vel;
@@ -264,13 +260,13 @@ void EKFGSF_yaw::predictEKF(const uint8_t model_index)
 	// predict covariance - equations generated using EKF/python/gsf_ekf_yaw_estimator/main.py
 
 	// Local short variable name copies required for readability
-	const float &P00 = _ekf_gsf[model_index].P(0,0);
-	const float &P01 = _ekf_gsf[model_index].P(0,1);
-	const float &P02 = _ekf_gsf[model_index].P(0,2);
-	const float &P11 = _ekf_gsf[model_index].P(1,1);
-	const float &P12 = _ekf_gsf[model_index].P(1,2);
-	const float &P22 = _ekf_gsf[model_index].P(2,2);
-	const float &psi = _ekf_gsf[model_index].X(2);
+	const float P00 = _ekf_gsf[model_index].P(0,0);
+	const float P01 = _ekf_gsf[model_index].P(0,1);
+	const float P02 = _ekf_gsf[model_index].P(0,2);
+	const float P11 = _ekf_gsf[model_index].P(1,1);
+	const float P12 = _ekf_gsf[model_index].P(1,2);
+	const float P22 = _ekf_gsf[model_index].P(2,2);
+	const float psi = _ekf_gsf[model_index].X(2);
 
 	// Use fixed values for delta velocity and delta angle process noise variances
 	const float dvxVar = sq(_accel_noise * _delta_vel_dt); // variance of forward delta velocity - (m/s)^2
@@ -320,12 +316,12 @@ bool EKFGSF_yaw::updateEKF(const uint8_t model_index)
 	_ekf_gsf[model_index].innov(1) = _ekf_gsf[model_index].X(1) - _vel_NE(1);
 
 	// Use temporary variables for covariance elements to reduce verbosity of auto-code expressions
-	const float &P00 = _ekf_gsf[model_index].P(0,0);
-	const float &P01 = _ekf_gsf[model_index].P(0,1);
-	const float &P02 = _ekf_gsf[model_index].P(0,2);
-	const float &P11 = _ekf_gsf[model_index].P(1,1);
-	const float &P12 = _ekf_gsf[model_index].P(1,2);
-	const float &P22 = _ekf_gsf[model_index].P(2,2);
+	const float P00 = _ekf_gsf[model_index].P(0,0);
+	const float P01 = _ekf_gsf[model_index].P(0,1);
+	const float P02 = _ekf_gsf[model_index].P(0,2);
+	const float P11 = _ekf_gsf[model_index].P(1,1);
+	const float P12 = _ekf_gsf[model_index].P(1,2);
+	const float P22 = _ekf_gsf[model_index].P(2,2);
 
 	// optimized auto generated code from SymPy script src/lib/ecl/EKF/python/ekf_derivation/main.py
 	const float t0 = ecl::powf(P01, 2);
@@ -531,17 +527,6 @@ Matrix3f EKFGSF_yaw::ahrsPredictRotMat(const Matrix3f &R, const Vector3f &g)
 	}
 
 	return ret;
-}
-
-bool EKFGSF_yaw::getYawData(float *yaw, float *yaw_variance) const
-{
-	if (_ekf_gsf_vel_fuse_started) {
-		*yaw = _gsf_yaw;
-		*yaw_variance = _gsf_yaw_variance;
-		return true;
-	}
-
-	return false;
 }
 
 void EKFGSF_yaw::setVelocity(const Vector2f &velocity, float accuracy)

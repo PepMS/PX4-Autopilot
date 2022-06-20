@@ -38,30 +38,13 @@
 #include <lib/parameters/param.h>
 #include <uORB/Subscription.hpp>
 #include <uORB/topics/system_power.h>
+#include <math.h>
 
 using namespace time_literals;
 
-unsigned int countSetBits(unsigned int n)
-{
-	unsigned int count = 0;
-
-	while (n) {
-		count += n & 1;
-		n >>= 1;
-	}
-
-	return count;
-}
-
-bool PreFlightCheck::powerCheck(orb_advert_t *mavlink_log_pub, const vehicle_status_s &status, const bool report_fail,
-				const bool prearm)
+bool PreFlightCheck::powerCheck(orb_advert_t *mavlink_log_pub, const vehicle_status_s &status, const bool report_fail)
 {
 	bool success = true;
-
-	if (!prearm) {
-		// Ignore power check after arming.
-		return true;
-	}
 
 	if (status.hil_state == vehicle_status_s::HIL_STATE_ON) {
 		// Ignore power check in HITL.
@@ -100,7 +83,7 @@ bool PreFlightCheck::powerCheck(orb_advert_t *mavlink_log_pub, const vehicle_sta
 			}
 
 
-			const int power_module_count = countSetBits(system_power.brick_valid);
+			const int power_module_count = math::countSetBits(system_power.brick_valid);
 
 			if (power_module_count < required_power_module_count) {
 				success = false;

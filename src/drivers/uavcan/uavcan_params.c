@@ -225,14 +225,10 @@ PARAM_DEFINE_INT32(UAVCAN_SUB_BARO, 0);
  * subscription battery
  *
  * Enable UAVCAN battery subscription.
- *  1) uavcan::equipment::power::BatteryInfo
- *  2) cuav::equipment::power::CBAT
+ *  uavcan::equipment::power::BatteryInfo
+ *  ardupilot::equipment::power::BatteryInfoAux
  *
- * @min 0
- * @max 2
- * @value 0 disabled
- * @value 1 default
- * @value 2 CUAV battery monitor
+ * @boolean
  * @reboot_required true
  * @group UAVCAN
  */
@@ -276,6 +272,18 @@ PARAM_DEFINE_INT32(UAVCAN_SUB_FLOW, 0);
 PARAM_DEFINE_INT32(UAVCAN_SUB_GPS, 1);
 
 /**
+ * subscription hygrometer
+ *
+ * Enable UAVCAN hygrometer subscriptions.
+ *  dronecan::sensors::hygrometer::Hygrometer
+ *
+ * @boolean
+ * @reboot_required true
+ * @group UAVCAN
+ */
+PARAM_DEFINE_INT32(UAVCAN_SUB_HYGRO, 0);
+
+/**
  * subscription ICE
  *
  * Enable UAVCAN internal combusion engine (ICE) subscription.
@@ -302,7 +310,7 @@ PARAM_DEFINE_INT32(UAVCAN_SUB_IMU, 0);
 /**
  * subscription magnetometer
  *
- * Enable UAVCAN GPS subscription.
+ * Enable UAVCAN mag subscription.
  *  uavcan::equipment::ahrs::MagneticFieldStrength
  *  uavcan::equipment::ahrs::MagneticFieldStrength2
  *
@@ -315,7 +323,7 @@ PARAM_DEFINE_INT32(UAVCAN_SUB_MAG, 1);
 /**
  * subscription range finder
  *
- * Enable UAVCAN GPS subscription.
+ * Enable UAVCAN range finder subscription.
  *  uavcan::equipment::range_sensor::Measurement
  *
  * @boolean
@@ -323,3 +331,15 @@ PARAM_DEFINE_INT32(UAVCAN_SUB_MAG, 1);
  * @group UAVCAN
  */
 PARAM_DEFINE_INT32(UAVCAN_SUB_RNG, 0);
+
+/**
+ * subscription button
+ *
+ * Enable UAVCAN button subscription.
+ *  ardupilot::indication::Button
+ *
+ * @boolean
+ * @reboot_required true
+ * @group UAVCAN
+ */
+PARAM_DEFINE_INT32(UAVCAN_SUB_BTN, 0);

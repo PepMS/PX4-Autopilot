@@ -67,7 +67,7 @@ FlightModeManager::~FlightModeManager()
 bool FlightModeManager::init()
 {
 	if (!_vehicle_local_position_sub.registerCallback()) {
-		PX4_ERR("vehicle_local_position callback registration failed!");
+		PX4_ERR("callback registration failed");
 		return false;
 	}
 
@@ -99,7 +99,7 @@ void FlightModeManager::Run()
 	vehicle_local_position_s vehicle_local_position;
 
 	if (_vehicle_local_position_sub.update(&vehicle_local_position)) {
-		const hrt_abstime time_stamp_now = hrt_absolute_time();
+		const hrt_abstime time_stamp_now = vehicle_local_position.timestamp_sample;
 		// Guard against too small (< 0.2ms) and too large (> 100ms) dt's.
 		const float dt = math::constrain(((time_stamp_now - _time_stamp_last_loop) / 1e6f), 0.0002f, 0.1f);
 		_time_stamp_last_loop = time_stamp_now;
@@ -200,31 +200,15 @@ void FlightModeManager::start_flight_task()
 	// Auto-follow me
 	if (_vehicle_status_sub.get().nav_state == vehicle_status_s::NAVIGATION_STATE_AUTO_FOLLOW_TARGET) {
 		should_disable_task = false;
-		FlightTaskError error = switchTask(FlightTaskIndex::AutoFollowMe);
+		FlightTaskError error = FlightTaskError::InvalidTask;
+
+#if !defined(CONSTRAINED_FLASH)
+		error = switchTask(FlightTaskIndex::AutoFollowTarget);
+#endif // !CONSTRAINED_FLASH
 
 		if (error != FlightTaskError::NoError) {
 			if (prev_failure_count == 0) {
 				PX4_WARN("Follow-Me activation failed with error: %s", errorToString(error));
-			}
-
-			task_failure = true;
-			_task_failure_count++;
-
-		} else {
-			// we want to be in this mode, reset the failure count
-			_task_failure_count = 0;
-		}
-
-	} else if (_vehicle_control_mode_sub.get().flag_control_auto_enabled) {
-		// Auto related maneuvers
-		should_disable_task = false;
-		FlightTaskError error = FlightTaskError::NoError;
-
-		error = switchTask(FlightTaskIndex::AutoLineSmoothVel);
-
-		if (error != FlightTaskError::NoError) {
-			if (prev_failure_count == 0) {
-				PX4_WARN("Auto activation failed with error: %s", errorToString(error));
 			}
 
 			task_failure = true;
@@ -246,6 +230,26 @@ void FlightModeManager::start_flight_task()
 		if (error != FlightTaskError::NoError) {
 			if (prev_failure_count == 0) {
 				PX4_WARN("Descend activation failed with error: %s", errorToString(error));
+			}
+
+			task_failure = true;
+			_task_failure_count++;
+
+		} else {
+			// we want to be in this mode, reset the failure count
+			_task_failure_count = 0;
+		}
+
+	} else if (_vehicle_control_mode_sub.get().flag_control_auto_enabled) {
+		// Auto related maneuvers
+		should_disable_task = false;
+		FlightTaskError error = FlightTaskError::NoError;
+
+		error = switchTask(FlightTaskIndex::Auto);
+
+		if (error != FlightTaskError::NoError) {
+			if (prev_failure_count == 0) {
+				PX4_WARN("Auto activation failed with error: %s", errorToString(error));
 			}
 
 			task_failure = true;
@@ -413,13 +417,14 @@ void FlightModeManager::handleCommand()
 		FlightTaskIndex desired_task = switchVehicleCommand(command.command);
 
 		// ignore all unkown commands
-		if (desired_task != FlightTaskIndex::None) {
+		if (desired_task != FlightTaskIndex::None
+		    && _vehicle_status_sub.get().vehicle_type == vehicle_status_s::VEHICLE_TYPE_ROTARY_WING) {
 			// switch to the commanded task
-			FlightTaskError switch_result = switchTask(desired_task);
+			bool switch_succeeded = (switchTask(desired_task) == FlightTaskError::NoError);
 			uint8_t cmd_result = vehicle_command_ack_s::VEHICLE_RESULT_FAILED;
 
 			// if we are in/switched to the desired task
-			if (switch_result >= FlightTaskError::NoError) {
+			if (switch_succeeded) {
 				cmd_result = vehicle_command_ack_s::VEHICLE_RESULT_ACCEPTED;
 
 				// if the task is running apply parameters to it and see if it rejects
@@ -427,9 +432,8 @@ void FlightModeManager::handleCommand()
 					cmd_result = vehicle_command_ack_s::VEHICLE_RESULT_DENIED;
 
 					// if we just switched and parameters are not accepted, go to failsafe
-					if (switch_result >= FlightTaskError::NoError) {
-						switchTask(FlightTaskIndex::ManualPosition);
-						cmd_result = vehicle_command_ack_s::VEHICLE_RESULT_FAILED;
+					if (switch_succeeded) {
+						switchTask(FlightTaskIndex::Failsafe);
 					}
 				}
 			}
@@ -438,11 +442,18 @@ void FlightModeManager::handleCommand()
 			vehicle_command_ack_s command_ack{};
 			command_ack.command = command.command;
 			command_ack.result = cmd_result;
-			command_ack.result_param1 = static_cast<int>(switch_result);
 			command_ack.target_system = command.source_system;
 			command_ack.target_component = command.source_component;
 			command_ack.timestamp = hrt_absolute_time();
 			_vehicle_command_ack_pub.publish(command_ack);
+
+		} else if (_current_task.task) {
+			// check for other commands not related to task switching
+			if ((command.command == vehicle_command_s::VEHICLE_CMD_DO_CHANGE_SPEED)
+			    && (static_cast<uint8_t>(command.param1 + .5f) == vehicle_command_s::SPEED_TYPE_GROUNDSPEED)
+			    && (command.param2 > 0.f)) {
+				_current_task.task->overrideCruiseSpeed(command.param2);
+			}
 		}
 	}
 }
@@ -453,12 +464,12 @@ void FlightModeManager::generateTrajectorySetpoint(const float dt,
 	_current_task.task->setYawHandler(_wv_controller);
 
 	// If the task fails sned out empty NAN setpoints and the controller will emergency failsafe
-	vehicle_local_position_setpoint_s setpoint = FlightTask::empty_setpoint;
+	trajectory_setpoint_s setpoint = FlightTask::empty_setpoint;
 	vehicle_constraints_s constraints = FlightTask::empty_constraints;
 
-	if (_current_task.task->updateInitialize() && _current_task.task->update() && _current_task.task->updateFinalize()) {
+	if (_current_task.task->updateInitialize() && _current_task.task->update()) {
 		// setpoints and constraints for the position controller from flighttask
-		setpoint = _current_task.task->getPositionSetpoint();
+		setpoint = _current_task.task->getTrajectorySetpoint();
 		constraints = _current_task.task->getConstraints();
 	}
 
@@ -498,22 +509,22 @@ void FlightModeManager::generateTrajectorySetpoint(const float dt,
 	_old_landing_gear_position = landing_gear.landing_gear;
 }
 
-void FlightModeManager::limitAltitude(vehicle_local_position_setpoint_s &setpoint,
+void FlightModeManager::limitAltitude(trajectory_setpoint_s &setpoint,
 				      const vehicle_local_position_s &vehicle_local_position)
 {
-	if (_vehicle_land_detected_sub.get().alt_max < 0.0f || !_home_position_sub.get().valid_alt
+	if (_param_lndmc_alt_max.get() < 0.0f || !_home_position_sub.get().valid_alt
 	    || !vehicle_local_position.z_valid || !vehicle_local_position.v_z_valid) {
 		// there is no altitude limitation present or the required information not available
 		return;
 	}
 
 	// maximum altitude == minimal z-value (NED)
-	const float min_z = _home_position_sub.get().z + (-_vehicle_land_detected_sub.get().alt_max);
+	const float min_z = _home_position_sub.get().z + (-_param_lndmc_alt_max.get());
 
 	if (vehicle_local_position.z < min_z) {
 		// above maximum altitude, only allow downwards flight == positive vz-setpoints (NED)
-		setpoint.z = min_z;
-		setpoint.vz = math::max(setpoint.vz, 0.f);
+		setpoint.position[2] = min_z;
+		setpoint.velocity[2] = math::max(setpoint.velocity[2], 0.f);
 	}
 }
 
@@ -525,11 +536,11 @@ FlightTaskError FlightModeManager::switchTask(FlightTaskIndex new_task_index)
 	}
 
 	// Save current setpoints for the next FlightTask
-	vehicle_local_position_setpoint_s last_setpoint = FlightTask::empty_setpoint;
+	trajectory_setpoint_s last_setpoint = FlightTask::empty_setpoint;
 	ekf_reset_counters_s last_reset_counters{};
 
 	if (isAnyTaskActive()) {
-		last_setpoint = _current_task.task->getPositionSetpoint();
+		last_setpoint = _current_task.task->getTrajectorySetpoint();
 		last_reset_counters = _current_task.task->getResetCounters();
 	}
 
@@ -573,7 +584,7 @@ const char *FlightModeManager::errorToString(const FlightTaskError error)
 	switch (error) {
 	case FlightTaskError::NoError: return "No Error";
 
-	case FlightTaskError::InvalidTask: return "Invalid Task ";
+	case FlightTaskError::InvalidTask: return "Invalid Task";
 
 	case FlightTaskError::ActivationFailed: return "Activation Failed";
 	}

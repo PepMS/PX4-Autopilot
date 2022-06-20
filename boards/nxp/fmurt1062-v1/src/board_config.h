@@ -179,11 +179,6 @@
 	 (1 << ADC_HW_REV_SENSE_CHANNEL)           | \
 	 (1 << ADC1_SPARE_1_CHANNEL))
 
-/* Define Battery 1 Voltage Divider and A per V */
-
-#define BOARD_BATTERY1_V_DIV         (10.1097f)     /* measured with the provided PM board */
-#define BOARD_BATTERY1_A_PER_V       (15.391030303f)
-
 /* HW has to large of R termination on ADC todo:change when HW value is chosen */
 
 #define BOARD_ADC_OPEN_CIRCUIT_V     (5.6f)
@@ -233,6 +228,8 @@
 #define GPIO_nARMED          /* GPIO_SD_B1_01 GPIO3_IO1 */ (GPIO_PORT3 | GPIO_PIN1 | GPIO_OUTPUT | GPIO_OUTPUT_ZERO | nARMED_OUTPUT_IOMUX)
 
 #define BOARD_INDICATE_EXTERNAL_LOCKOUT_STATE(enabled)  px4_arch_configgpio((enabled) ? GPIO_nARMED : GPIO_nARMED_INIT)
+#define BOARD_GET_EXTERNAL_LOCKOUT_STATE() px4_arch_gpioread(GPIO_nARMED)
+
 
 /* PWM
  */

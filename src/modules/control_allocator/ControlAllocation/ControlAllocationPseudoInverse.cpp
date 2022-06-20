@@ -44,10 +44,13 @@
 void
 ControlAllocationPseudoInverse::setEffectivenessMatrix(
 	const matrix::Matrix<float, ControlAllocation::NUM_AXES, ControlAllocation::NUM_ACTUATORS> &effectiveness,
-	const matrix::Vector<float, ControlAllocation::NUM_ACTUATORS> &actuator_trim, int num_actuators)
+	const ActuatorVector &actuator_trim, const ActuatorVector &linearization_point, int num_actuators,
+	bool update_normalization_scale)
 {
-	ControlAllocation::setEffectivenessMatrix(effectiveness, actuator_trim, num_actuators);
+	ControlAllocation::setEffectivenessMatrix(effectiveness, actuator_trim, linearization_point, num_actuators,
+			update_normalization_scale);
 	_mix_update_needed = true;
+	_normalization_needs_update = update_normalization_scale;
 }
 
 void
@@ -55,49 +58,103 @@ ControlAllocationPseudoInverse::updatePseudoInverse()
 {
 	if (_mix_update_needed) {
 		matrix::geninv(_effectiveness, _mix);
+
+		if (_normalization_needs_update && !_had_actuator_failure) {
+			updateControlAllocationMatrixScale();
+			_normalization_needs_update = false;
+		}
+
 		normalizeControlAllocationMatrix();
 		_mix_update_needed = false;
 	}
 }
 
 void
-ControlAllocationPseudoInverse::normalizeControlAllocationMatrix()
+ControlAllocationPseudoInverse::updateControlAllocationMatrixScale()
 {
 	// Same scale on roll and pitch
-	const float roll_norm_sq = _mix.col(0).norm_squared();
-	const float pitch_norm_sq = _mix.col(1).norm_squared();
-	const float roll_pitch_scale = sqrtf(fmaxf(roll_norm_sq, pitch_norm_sq) / (_num_actuators / 2.f));
+	if (_normalize_rpy) {
 
-	if (roll_pitch_scale > FLT_EPSILON) {
-		_mix.col(0) /= roll_pitch_scale;
-		_mix.col(1) /= roll_pitch_scale;
+		int num_non_zero_roll_torque = 0;
+		int num_non_zero_pitch_torque = 0;
+
+		for (int i = 0; i < _num_actuators; i++) {
+
+			if (fabsf(_mix(i, 0)) > 1e-3f) {
+				++num_non_zero_roll_torque;
+			}
+
+			if (fabsf(_mix(i, 1)) > 1e-3f) {
+				++num_non_zero_pitch_torque;
+			}
+		}
+
+		float roll_norm_scale = 1.f;
+
+		if (num_non_zero_roll_torque > 0) {
+			roll_norm_scale = sqrtf(_mix.col(0).norm_squared() / (num_non_zero_roll_torque / 2.f));
+		}
+
+		float pitch_norm_scale = 1.f;
+
+		if (num_non_zero_pitch_torque > 0) {
+			pitch_norm_scale = sqrtf(_mix.col(1).norm_squared() / (num_non_zero_pitch_torque / 2.f));
+		}
+
+		_control_allocation_scale(0) = fmaxf(roll_norm_scale, pitch_norm_scale);
+		_control_allocation_scale(1) = _control_allocation_scale(0);
+
+		// Scale yaw separately
+		_control_allocation_scale(2) = _mix.col(2).max();
+
+	} else {
+		_control_allocation_scale(0) = 1.f;
+		_control_allocation_scale(1) = 1.f;
+		_control_allocation_scale(2) = 1.f;
 	}
 
-	// Scale yaw separately
-	const float yaw_scale = _mix.col(2).max();
+	// Scale thrust by the sum of the individual thrust axes, and use the scaling for the Z axis if there's no actuators
+	// (for tilted actuators)
+	_control_allocation_scale(THRUST_Z) = 1.f;
 
-	if (yaw_scale > FLT_EPSILON) {
-		_mix.col(2) /= yaw_scale;
+	for (int axis_idx = 2; axis_idx >= 0; --axis_idx) {
+		int num_non_zero_thrust = 0;
+		float norm_sum = 0.f;
+
+		for (int i = 0; i < _num_actuators; i++) {
+			float norm = fabsf(_mix(i, 3 + axis_idx));
+			norm_sum += norm;
+
+			if (norm > FLT_EPSILON) {
+				++num_non_zero_thrust;
+			}
+		}
+
+		if (num_non_zero_thrust > 0) {
+			_control_allocation_scale(3 + axis_idx) = norm_sum / num_non_zero_thrust;
+
+		} else {
+			_control_allocation_scale(3 + axis_idx) = _control_allocation_scale(THRUST_Z);
+		}
+	}
+}
+
+void
+ControlAllocationPseudoInverse::normalizeControlAllocationMatrix()
+{
+	if (_control_allocation_scale(0) > FLT_EPSILON) {
+		_mix.col(0) /= _control_allocation_scale(0);
+		_mix.col(1) /= _control_allocation_scale(1);
 	}
 
-	// Same scale on X and Y
-	const float xy_scale = fmaxf(_mix.col(3).max(), _mix.col(4).max());
-
-	if (xy_scale > FLT_EPSILON) {
-		_mix.col(3) /= xy_scale;
-		_mix.col(4) /= xy_scale;
+	if (_control_allocation_scale(2) > FLT_EPSILON) {
+		_mix.col(2) /= _control_allocation_scale(2);
 	}
 
-	// Scale Z thrust separately
-	float z_sum = 0.f;
-	auto z_col = _mix.col(5);
-
-	for (int i = 0; i < _num_actuators; i++) {
-		z_sum += z_col(i, 0);
-	}
-
-	if ((-z_sum > FLT_EPSILON) && (_num_actuators > 0)) {
-		_mix.col(5) /= -z_sum / _num_actuators;
+	if (_control_allocation_scale(3) > FLT_EPSILON) {
+		_mix.col(3) /= _control_allocation_scale(3);
+		_mix.col(4) /= _control_allocation_scale(4);
+		_mix.col(5) /= _control_allocation_scale(5);
 	}
 
 	// Set all the small elements to 0 to avoid issues
@@ -117,12 +174,8 @@ ControlAllocationPseudoInverse::allocate()
 	//Compute new gains if needed
 	updatePseudoInverse();
 
+	_prev_actuator_sp = _actuator_sp;
+
 	// Allocate
 	_actuator_sp = _actuator_trim + _mix * (_control_sp - _control_trim);
-
-	// Clip
-	clipActuatorSetpoint(_actuator_sp);
-
-	// Compute achieved control
-	_control_allocated = _effectiveness * _actuator_sp;
 }

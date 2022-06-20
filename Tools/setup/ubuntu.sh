@@ -77,7 +77,6 @@ sudo apt-get update -y --quiet
 sudo DEBIAN_FRONTEND=noninteractive apt-get -y --quiet --no-install-recommends install \
 	astyle \
 	build-essential \
-	ccache \
 	cmake \
 	cppcheck \
 	file \
@@ -86,6 +85,8 @@ sudo DEBIAN_FRONTEND=noninteractive apt-get -y --quiet --no-install-recommends i
 	gdb \
 	git \
 	lcov \
+	libxml2-dev \
+	libxml2-utils \
 	make \
 	ninja-build \
 	python3 \
@@ -98,12 +99,6 @@ sudo DEBIAN_FRONTEND=noninteractive apt-get -y --quiet --no-install-recommends i
 	unzip \
 	zip \
 	;
-
-if [[ "${UBUNTU_RELEASE}" == "16.04" ]]; then
-	echo "Installing Ubuntu 16.04 PX4-compatible ccache version"
-	wget -O /tmp/ccache_3.4.1-1_amd64.deb http://launchpadlibrarian.net/356662933/ccache_3.4.1-1_amd64.deb
-	sudo dpkg -i /tmp/ccache_3.4.1-1_amd64.deb
-fi
 
 # Python3 dependencies
 echo
@@ -134,13 +129,13 @@ if [[ $INSTALL_NUTTX == "true" ]]; then
 		genromfs \
 		gettext \
 		gperf \
-		kconfig-frontends \
 		libelf-dev \
 		libexpat-dev \
 		libgmp-dev \
 		libisl-dev \
 		libmpc-dev \
 		libmpfr-dev \
+		libncurses5 \
 		libncurses5-dev \
 		libncursesw5-dev \
 		libtool \
@@ -151,6 +146,12 @@ if [[ $INSTALL_NUTTX == "true" ]]; then
 		util-linux \
 		vim-common \
 		;
+	if [[ "${UBUNTU_RELEASE}" == "20.04" ]]; then
+		sudo DEBIAN_FRONTEND=noninteractive apt-get -y --quiet --no-install-recommends install \
+		kconfig-frontends \
+		;
+	fi
+
 
 	if [ -n "$USER" ]; then
 		# add user to dialout group (serial port access)
@@ -199,13 +200,12 @@ if [[ $INSTALL_SIM == "true" ]]; then
 
 	if [[ "${UBUNTU_RELEASE}" == "18.04" ]]; then
 		java_version=11
-		gazebo_version=9
 	elif [[ "${UBUNTU_RELEASE}" == "20.04" ]]; then
 		java_version=13
-		gazebo_version=11
+	elif [[ "${UBUNTU_RELEASE}" == "22.04" ]]; then
+		java_version=11
 	else
 		java_version=14
-		gazebo_version=11
 	fi
 	# Java (jmavsim or fastrtps)
 	sudo DEBIAN_FRONTEND=noninteractive apt-get -y --quiet --no-install-recommends install \
@@ -219,20 +219,30 @@ if [[ $INSTALL_SIM == "true" ]]; then
 	sudo update-alternatives --set java $(update-alternatives --list java | grep "java-$java_version")
 
 	# Gazebo
+	if [[ "${UBUNTU_RELEASE}" == "18.04" ]]; then
+		gazebo_version=9
+		gazebo_packages="gazebo$gazebo_version libgazebo$gazebo_version-dev"
+	elif [[ "${UBUNTU_RELEASE}" == "22.04" ]]; then
+		gazebo_packages="gazebo libgazebo-dev"
+	else
+		# default and Ubuntu 20.04
+		gazebo_version=11
+		gazebo_packages="gazebo$gazebo_version libgazebo$gazebo_version-dev"
+	fi
+
 	sudo sh -c 'echo "deb http://packages.osrfoundation.org/gazebo/ubuntu-stable `lsb_release -cs` main" > /etc/apt/sources.list.d/gazebo-stable.list'
 	wget http://packages.osrfoundation.org/gazebo.key -O - | sudo apt-key add -
 	# Update list, since new gazebo-stable.list has been added
 	sudo apt-get update -y --quiet
 	sudo DEBIAN_FRONTEND=noninteractive apt-get -y --quiet --no-install-recommends install \
 		dmidecode \
-		gazebo$gazebo_version \
+		$gazebo_packages \
 		gstreamer1.0-plugins-bad \
 		gstreamer1.0-plugins-base \
 		gstreamer1.0-plugins-good \
 		gstreamer1.0-plugins-ugly \
 		gstreamer1.0-libav \
 		libeigen3-dev \
-		libgazebo$gazebo_version-dev \
 		libgstreamer-plugins-base1.0-dev \
 		libimage-exiftool-perl \
 		libopencv-dev \

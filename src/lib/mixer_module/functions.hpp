@@ -52,7 +52,7 @@ class FunctionProviderBase
 public:
 	struct Context {
 		px4::WorkItem &work_item;
-		bool reversible_motors;
+		const float &thrust_factor;
 	};
 
 	FunctionProviderBase() = default;
@@ -72,6 +72,11 @@ public:
 	virtual uORB::SubscriptionCallbackWorkItem *subscriptionCallback() { return nullptr; }
 
 	virtual bool getLatestSampleTimestamp(hrt_abstime &t) const { return false; }
+
+	/**
+	 * Check whether the output (motor) is configured to be reversible
+	 */
+	virtual bool reversible(OutputFunction func) const { return false; }
 };
 
 /**
@@ -111,6 +116,8 @@ public:
 	static_assert(actuator_motors_s::NUM_CONTROLS == (int)OutputFunction::MotorMax - (int)OutputFunction::Motor1 + 1,
 		      "Unexpected num motors");
 
+	static_assert(actuator_motors_s::ACTUATOR_FUNCTION_MOTOR1 == (int)OutputFunction::Motor1, "Unexpected motor idx");
+
 	FunctionMotors(const Context &context);
 	static FunctionProviderBase *allocate(const Context &context) { return new FunctionMotors(context); }
 
@@ -122,11 +129,57 @@ public:
 	uORB::SubscriptionCallbackWorkItem *subscriptionCallback() override { return &_topic; }
 
 	bool getLatestSampleTimestamp(hrt_abstime &t) const override { t = _data.timestamp_sample; return t != 0; }
+
+	static inline void updateValues(uint32_t reversible, float thrust_factor, float *values, int num_values);
+
+	bool reversible(OutputFunction func) const override
+	{ return _data.reversible_flags & (1u << ((int)func - (int)OutputFunction::Motor1)); }
 private:
 	uORB::SubscriptionCallbackWorkItem _topic;
 	actuator_motors_s _data{};
-	const bool _reversible_motors;
+	const float &_thrust_factor;
 };
+
+void FunctionMotors::updateValues(uint32_t reversible, float thrust_factor, float *values, int num_values)
+{
+	if (thrust_factor > 0.f && thrust_factor <= 1.f) {
+		// thrust factor
+		//  rel_thrust = factor * x^2 + (1-factor) * x,
+		const float a = thrust_factor;
+		const float b = (1.f - thrust_factor);
+
+		// don't recompute for all values (ax^2+bx+c=0)
+		const float tmp1 = b / (2.f * a);
+		const float tmp2 = b * b / (4.f * a * a);
+
+		for (int i = 0; i < num_values; ++i) {
+			float control = values[i];
+
+			if (control > 0.f) {
+				values[i] = -tmp1 + sqrtf(tmp2 + (control / a));
+
+			} else if (control < -0.f) {
+				values[i] =  tmp1 - sqrtf(tmp2 - (control / a));
+
+			} else {
+				values[i] = 0.f;
+			}
+		}
+	}
+
+	for (int i = 0; i < num_values; ++i) {
+		if ((reversible & (1u << i)) == 0) {
+			if (values[i] < -FLT_EPSILON) {
+				values[i] = NAN;
+
+			} else {
+				// remap from [0, 1] to [-1, 1]
+				values[i] = values[i] * 2.f - 1.f;
+			}
+		}
+	}
+}
+
 
 /**
  * Functions: Servo1 ... ServoMax

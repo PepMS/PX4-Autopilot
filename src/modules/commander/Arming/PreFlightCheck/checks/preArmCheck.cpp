@@ -34,14 +34,57 @@
 #include "../PreFlightCheck.hpp"
 
 #include <ArmAuthorization.h>
+#include <HealthFlags.h>
+#include <lib/parameters/param.h>
 #include <systemlib/mavlink_log.h>
 #include <uORB/topics/vehicle_command_ack.h>
-#include <HealthFlags.h>
 
 bool PreFlightCheck::preArmCheck(orb_advert_t *mavlink_log_pub, const vehicle_status_flags_s &status_flags,
-				 const safety_s &safety, const arm_requirements_t &arm_requirements, vehicle_status_s &status, bool report_fail)
+				 const vehicle_control_mode_s &control_mode, const bool safety_button_available, const bool safety_off,
+				 vehicle_status_s &status, const bool report_fail, const bool is_arm_attempt)
 {
 	bool prearm_ok = true;
+
+	// rate control mode require valid angular velocity
+	if (control_mode.flag_control_rates_enabled && !status_flags.angular_velocity_valid) {
+		if (report_fail) { mavlink_log_critical(mavlink_log_pub, "Arming denied! angular velocity invalid"); }
+
+		prearm_ok = false;
+	}
+
+	// attitude control mode require valid attitude
+	if (control_mode.flag_control_attitude_enabled && !status_flags.attitude_valid) {
+		if (report_fail) { mavlink_log_critical(mavlink_log_pub, "Arming denied! attitude invalid"); }
+
+		prearm_ok = false;
+	}
+
+	// velocity control mode require valid velocity
+	if (control_mode.flag_control_velocity_enabled && !status_flags.local_velocity_valid) {
+		if (report_fail) { mavlink_log_critical(mavlink_log_pub, "Arming denied! velocity invalid"); }
+
+		prearm_ok = false;
+	}
+
+	// position control mode require valid position
+	if (control_mode.flag_control_position_enabled && !status_flags.local_position_valid) {
+		if (report_fail) { mavlink_log_critical(mavlink_log_pub, "Arming denied! position invalid"); }
+
+		prearm_ok = false;
+	}
+
+	// manual control mode require valid manual control (rc)
+	if (control_mode.flag_control_manual_enabled && status.rc_signal_lost) {
+		if (report_fail) { mavlink_log_critical(mavlink_log_pub, "Arming denied! manual control lost"); }
+
+		prearm_ok = false;
+	}
+
+	if (status_flags.flight_terminated) {
+		if (report_fail) { mavlink_log_critical(mavlink_log_pub, "Arming denied! Flight termination active"); }
+
+		prearm_ok = false;
+	}
 
 	// USB not connected
 	if (!status_flags.circuit_breaker_engaged_usb_check && status_flags.usb_connected) {
@@ -54,7 +97,7 @@ bool PreFlightCheck::preArmCheck(orb_advert_t *mavlink_log_pub, const vehicle_st
 	if (!status_flags.circuit_breaker_engaged_power_check) {
 
 		// Fail transition if power is not good
-		if (!status_flags.condition_power_input_valid) {
+		if (!status_flags.power_input_valid) {
 			if (report_fail) { mavlink_log_critical(mavlink_log_pub, "Arming denied! Connect power module"); }
 
 			prearm_ok = false;
@@ -62,10 +105,10 @@ bool PreFlightCheck::preArmCheck(orb_advert_t *mavlink_log_pub, const vehicle_st
 
 		// main battery level
 		set_health_flags(subsystem_info_s::SUBSYSTEM_TYPE_SENSORBATTERY, true, true,
-				 status_flags.condition_battery_healthy, status);
+				 status_flags.battery_healthy, status);
 
 		// Only arm if healthy
-		if (!status_flags.condition_battery_healthy) {
+		if (!status_flags.battery_healthy) {
 			if (prearm_ok) {
 				if (report_fail) { mavlink_log_critical(mavlink_log_pub, "Arming denied! Check battery"); }
 			}
@@ -75,9 +118,12 @@ bool PreFlightCheck::preArmCheck(orb_advert_t *mavlink_log_pub, const vehicle_st
 	}
 
 	// Arm Requirements: mission
-	if (arm_requirements.mission) {
+	int32_t _param_com_arm_mis_req = 0;
+	param_get(param_find("COM_ARM_MIS_REQ"), &_param_com_arm_mis_req);
+	const bool mission_required = (_param_com_arm_mis_req == 1);
 
-		if (!status_flags.condition_auto_mission_available) {
+	if (mission_required) {
+		if (!status_flags.auto_mission_available) {
 			if (prearm_ok) {
 				if (report_fail) { mavlink_log_critical(mavlink_log_pub, "Arming denied! No valid mission"); }
 			}
@@ -85,7 +131,7 @@ bool PreFlightCheck::preArmCheck(orb_advert_t *mavlink_log_pub, const vehicle_st
 			prearm_ok = false;
 		}
 
-		if (!status_flags.condition_global_position_valid) {
+		if (!status_flags.global_position_valid) {
 			if (prearm_ok) {
 				if (report_fail) { mavlink_log_critical(mavlink_log_pub, "Arming denied! Missions require a global position"); }
 			}
@@ -94,9 +140,12 @@ bool PreFlightCheck::preArmCheck(orb_advert_t *mavlink_log_pub, const vehicle_st
 		}
 	}
 
-	if (arm_requirements.global_position && !status_flags.circuit_breaker_engaged_posfailure_check) {
+	int32_t _param_com_arm_wo_gps = 1;
+	param_get(param_find("COM_ARM_WO_GPS"), &_param_com_arm_wo_gps);
+	const bool global_position_required = (_param_com_arm_wo_gps == 0);
 
-		if (!status_flags.condition_global_position_valid) {
+	if (global_position_required && !status_flags.circuit_breaker_engaged_posfailure_check) {
+		if (!status_flags.global_position_valid) {
 			if (prearm_ok) {
 				if (report_fail) { mavlink_log_critical(mavlink_log_pub, "Arming denied! Global position required"); }
 			}
@@ -104,7 +153,7 @@ bool PreFlightCheck::preArmCheck(orb_advert_t *mavlink_log_pub, const vehicle_st
 			prearm_ok = false;
 		}
 
-		if (!status_flags.condition_home_position_valid) {
+		if (!status_flags.home_position_valid) {
 			if (prearm_ok) {
 				if (report_fail) { mavlink_log_critical(mavlink_log_pub, "Arming denied! Home position invalid"); }
 			}
@@ -114,10 +163,10 @@ bool PreFlightCheck::preArmCheck(orb_advert_t *mavlink_log_pub, const vehicle_st
 	}
 
 	// safety button
-	if (safety.safety_switch_available && !safety.safety_off) {
-		// Fail transition if we need safety switch press
+	if (safety_button_available && !safety_off) {
+		// Fail transition if we need safety button press
 		if (prearm_ok) {
-			if (report_fail) { mavlink_log_critical(mavlink_log_pub, "Arming denied! Press safety switch first"); }
+			if (report_fail) { mavlink_log_critical(mavlink_log_pub, "Arming denied! Press safety button first"); }
 		}
 
 		prearm_ok = false;
@@ -132,7 +181,11 @@ bool PreFlightCheck::preArmCheck(orb_advert_t *mavlink_log_pub, const vehicle_st
 
 	}
 
-	if (arm_requirements.esc_check && status_flags.condition_escs_error) {
+	int32_t _param_com_arm_chk_escs = 1;
+	param_get(param_find("COM_ARM_CHK_ESCS"), &_param_com_arm_chk_escs);
+	const bool esc_checks_required = (_param_com_arm_chk_escs == 0);
+
+	if (esc_checks_required && status_flags.escs_error) {
 		if (prearm_ok) {
 			if (report_fail) { mavlink_log_critical(mavlink_log_pub, "Arming denied! One or more ESCs are offline"); }
 
@@ -140,7 +193,7 @@ bool PreFlightCheck::preArmCheck(orb_advert_t *mavlink_log_pub, const vehicle_st
 		}
 	}
 
-	if (arm_requirements.esc_check && status_flags.condition_escs_failure) {
+	if (esc_checks_required && status_flags.escs_failure) {
 		if (prearm_ok) {
 			if (report_fail) { mavlink_log_critical(mavlink_log_pub, "Arming denied! One or more ESCs have a failure"); }
 
@@ -149,7 +202,6 @@ bool PreFlightCheck::preArmCheck(orb_advert_t *mavlink_log_pub, const vehicle_st
 	}
 
 	if (status.is_vtol) {
-
 		if (status.in_transition_mode) {
 			if (prearm_ok) {
 				if (report_fail) { mavlink_log_critical(mavlink_log_pub, "Arming denied! Vehicle is in transition state"); }
@@ -168,7 +220,11 @@ bool PreFlightCheck::preArmCheck(orb_advert_t *mavlink_log_pub, const vehicle_st
 		}
 	}
 
-	if (arm_requirements.geofence && status.geofence_violated) {
+	int32_t _param_gf_action = 0;
+	param_get(param_find("GF_ACTION"), &_param_gf_action);
+	const bool gefence_action_configured = (_param_gf_action != 0);
+
+	if (gefence_action_configured && status.geofence_violated) {
 		if (report_fail) {
 			mavlink_log_critical(mavlink_log_pub, "Arming denied, vehicle outside geofence");
 		}
@@ -176,15 +232,19 @@ bool PreFlightCheck::preArmCheck(orb_advert_t *mavlink_log_pub, const vehicle_st
 		prearm_ok = false;
 	}
 
+	int32_t _param_com_arm_auth_req = 0;
+	param_get(param_find("COM_ARM_AUTH_REQ"), &_param_com_arm_auth_req);
+	const bool arm_authorization_configured = (_param_com_arm_auth_req != 0);
+
 	// Arm Requirements: authorization
 	// check last, and only if everything else has passed
-	if (arm_requirements.arm_authorization && prearm_ok) {
+	// skip arm authorization check until actual arming attempt
+	if (arm_authorization_configured && prearm_ok && is_arm_attempt) {
 		if (arm_auth_check() != vehicle_command_ack_s::VEHICLE_RESULT_ACCEPTED) {
 			// feedback provided in arm_auth_check
 			prearm_ok = false;
 		}
 	}
-
 
 	return prearm_ok;
 }

@@ -1,6 +1,6 @@
 /****************************************************************************
  *
- *   Copyright (c) 2019-2020 PX4 Development Team. All rights reserved.
+ *   Copyright (c) 2019-2022 PX4 Development Team. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -54,8 +54,16 @@ using namespace matrix;
 using namespace time_literals;
 
 Sih::Sih() :
-	ModuleParams(nullptr),
-	ScheduledWorkItem(MODULE_NAME, px4::wq_configurations::rate_ctrl)
+	ModuleParams(nullptr)
+{}
+
+Sih::~Sih()
+{
+	perf_free(_loop_perf);
+	perf_free(_loop_interval_perf);
+}
+
+void Sih::run()
 {
 	_px4_accel.set_temperature(T1_C);
 	_px4_gyro.set_temperature(T1_C);
@@ -72,16 +80,91 @@ Sih::Sih() :
 	_gt_time = task_start;
 	_dist_snsr_time = task_start;
 	_vehicle = (VehicleType)constrain(_sih_vtype.get(), static_cast<typeof _sih_vtype.get()>(0),
-					  static_cast<typeof _sih_vtype.get()>(1));
+					  static_cast<typeof _sih_vtype.get()>(2));
+
+	if (_sys_ctrl_alloc.get()) {
+		_actuator_out_sub = uORB::Subscription{ORB_ID(actuator_outputs_sim)};
+	}
+
+#if defined(ENABLE_LOCKSTEP_SCHEDULER)
+	lockstep_loop();
+#else
+	realtime_loop();
+#endif
+	exit_and_cleanup();
 }
 
-Sih::~Sih()
+#if defined(ENABLE_LOCKSTEP_SCHEDULER)
+// Get current timestamp in microseconds
+uint64_t micros()
 {
-	perf_free(_loop_perf);
-	perf_free(_loop_interval_perf);
+	struct timeval t;
+	gettimeofday(&t, nullptr);
+	return t.tv_sec * ((uint64_t)1000000) + t.tv_usec;
 }
 
-bool Sih::init()
+void Sih::lockstep_loop()
+{
+
+	int rate = math::min(_imu_gyro_ratemax.get(), _imu_integration_rate.get());
+
+	// default to 400Hz (2500 us interval)
+	if (rate <= 0) {
+		rate = 400;
+	}
+
+	// 200 - 2000 Hz
+	int sim_interval_us = math::constrain(int(roundf(1e6f / rate)), 500, 5000);
+
+	float speed_factor = 1.f;
+	const char *speedup = getenv("PX4_SIM_SPEED_FACTOR");
+
+	if (speedup) {
+		speed_factor = atof(speedup);
+	}
+
+	int rt_interval_us = int(roundf(sim_interval_us / speed_factor));
+
+	PX4_INFO("Simulation loop with %d Hz (%d us sim time interval)", rate, sim_interval_us);
+	PX4_INFO("Simulation with %.1fx speedup. Loop with (%d us wall time interval)", (double)speed_factor, rt_interval_us);
+	uint64_t pre_compute_wall_time_us;
+
+	while (!should_exit()) {
+		pre_compute_wall_time_us = micros();
+		perf_count(_loop_interval_perf);
+
+		_current_simulation_time_us += sim_interval_us;
+		struct timespec ts;
+		abstime_to_ts(&ts, _current_simulation_time_us);
+		px4_clock_settime(CLOCK_MONOTONIC, &ts);
+
+		perf_begin(_loop_perf);
+		sensor_step();
+		perf_end(_loop_perf);
+
+		// Only do lock-step once we received the first actuator output
+		int sleep_time;
+		uint64_t current_wall_time_us;
+
+		if (_last_actuator_output_time <= 0) {
+			PX4_DEBUG("SIH starting up - no lockstep yet");
+			current_wall_time_us = micros();
+			sleep_time = math::max(0, sim_interval_us - (int)(current_wall_time_us - pre_compute_wall_time_us));
+
+		} else {
+			px4_lockstep_wait_for_components();
+			current_wall_time_us = micros();
+			sleep_time = math::max(0, rt_interval_us - (int)(current_wall_time_us - pre_compute_wall_time_us));
+		}
+
+		_achieved_speedup = 0.99f * _achieved_speedup + 0.01f * ((float)sim_interval_us / (float)(
+					    current_wall_time_us - pre_compute_wall_time_us + sleep_time));
+		usleep(sleep_time);
+	}
+}
+#endif
+
+void Sih::realtime_loop()
 {
 	int rate = _imu_gyro_ratemax.get();
 
@@ -92,15 +175,29 @@ bool Sih::init()
 
 	// 200 - 2000 Hz
 	int interval_us = math::constrain(int(roundf(1e6f / rate)), 500, 5000);
-	ScheduleOnInterval(interval_us);
 
-	return true;
+	px4_sem_init(&_data_semaphore, 0, 0);
+	hrt_call_every(&_timer_call, interval_us, interval_us, timer_callback, &_data_semaphore);
+
+	while (!should_exit()) {
+		px4_sem_wait(&_data_semaphore);     // periodic real time wakeup
+		perf_begin(_loop_perf);
+		sensor_step();
+		perf_end(_loop_perf);
+	}
+
+	hrt_cancel(&_timer_call);
+	px4_sem_destroy(&_data_semaphore);
 }
 
-void Sih::Run()
-{
-	perf_count(_loop_interval_perf);
 
+void Sih::timer_callback(void *sem)
+{
+	px4_sem_post((px4_sem_t *)sem);
+}
+
+void Sih::sensor_step()
+{
 	// check for parameter updates
 	if (_parameter_update_sub.updated()) {
 		// clear update
@@ -143,8 +240,16 @@ void Sih::Run()
 	if (_now - _baro_time >= 50_ms
 	    && fabs(_baro_offset_m) < 10000) {
 		_baro_time = _now;
-		_px4_baro.set_temperature(_baro_temp_c);
-		_px4_baro.update(_now, _baro_p_mBar);
+
+		// publish
+		sensor_baro_s sensor_baro{};
+		sensor_baro.timestamp_sample = _now;
+		sensor_baro.device_id = 6620172; // 6620172: DRV_BARO_DEVTYPE_BAROSIM, BUS: 1, ADDR: 4, TYPE: SIMULATION
+		sensor_baro.pressure = _baro_p_mBar * 100.f;
+		sensor_baro.temperature = _baro_temp_c;
+		sensor_baro.error_count = 0;
+		sensor_baro.timestamp = hrt_absolute_time();
+		_sensor_baro_pub.publish(sensor_baro);
 	}
 
 	// gps published at 20Hz
@@ -153,7 +258,7 @@ void Sih::Run()
 		send_gps();
 	}
 
-	if (_vehicle == VehicleType::FW && _now - _airspeed_time >= 50_ms) {
+	if ((_vehicle == VehicleType::FW || _vehicle == VehicleType::TS) && _now - _airspeed_time >= 50_ms) {
 		_airspeed_time = _now;
 		send_airspeed();
 	}
@@ -199,7 +304,8 @@ void Sih::parameters_updated()
 	_I(0, 2) = _I(2, 0) = _sih_ixz.get();
 	_I(1, 2) = _I(2, 1) = _sih_iyz.get();
 
-	_Im1 = inv(_I);
+	// guards against too small determinants
+	_Im1 = 100.0f * inv(static_cast<typeof _I>(100.0f * _I));
 
 	_mu_I = Vector3f(_sih_mu_x.get(), _sih_mu_y.get(), _sih_mu_z.get());
 
@@ -266,13 +372,29 @@ void Sih::read_motors()
 	float pwm_middle = 0.5f * (PWM_DEFAULT_MIN + PWM_DEFAULT_MAX);
 
 	if (_actuator_out_sub.update(&actuators_out)) {
-		for (int i = 0; i < NB_MOTORS; i++) { // saturate the motor signals
-			if (_vehicle == VehicleType::FW && i < 3) { // control surfaces in range [-1,1]
-				_u[i] = constrain(2.0f * (actuators_out.output[i] - pwm_middle) / (PWM_DEFAULT_MAX - PWM_DEFAULT_MIN), -1.0f, 1.0f);
+		_last_actuator_output_time = actuators_out.timestamp;
 
-			} else { // throttle signals in range [0,1]
-				float u_sp = constrain((actuators_out.output[i] - PWM_DEFAULT_MIN) / (PWM_DEFAULT_MAX - PWM_DEFAULT_MIN), 0.0f, 1.0f);
-				_u[i] = _u[i] + _dt / _T_TAU * (u_sp - _u[i]); // first order transfer function with time constant tau
+		if (_sys_ctrl_alloc.get()) {
+			for (int i = 0; i < NB_MOTORS; i++) { // saturate the motor signals
+				if ((_vehicle == VehicleType::FW && i < 3) || (_vehicle == VehicleType::TS && i > 3)) {
+					_u[i] = actuators_out.output[i];
+
+				} else {
+					float u_sp = actuators_out.output[i];
+					_u[i] = _u[i] + _dt / _T_TAU * (u_sp - _u[i]); // first order transfer function with time constant tau
+				}
+			}
+
+		} else {
+			for (int i = 0; i < NB_MOTORS; i++) { // saturate the motor signals
+				if ((_vehicle == VehicleType::FW && i < 3) || (_vehicle == VehicleType::TS
+						&& i > 3)) { // control surfaces in range [-1,1]
+					_u[i] = constrain(2.0f * (actuators_out.output[i] - pwm_middle) / (PWM_DEFAULT_MAX - PWM_DEFAULT_MIN), -1.0f, 1.0f);
+
+				} else { // throttle signals in range [0,1]
+					float u_sp = constrain((actuators_out.output[i] - PWM_DEFAULT_MIN) / (PWM_DEFAULT_MAX - PWM_DEFAULT_MIN), 0.0f, 1.0f);
+					_u[i] = _u[i] + _dt / _T_TAU * (u_sp - _u[i]); // first order transfer function with time constant tau
+				}
 			}
 		}
 	}
@@ -293,12 +415,19 @@ void Sih::generate_force_and_torques()
 		_T_B = Vector3f(_T_MAX * _u[3], 0.0f, 0.0f); 	// forward thruster
 		// _Mt_B = Vector3f(_Q_MAX*_u[3], 0.0f,0.0f); 	// thruster torque
 		_Mt_B = Vector3f();
-		generate_aerodynamics();
-	}
+		generate_fw_aerodynamics();
 
+	} else if (_vehicle == VehicleType::TS) {
+		_T_B = Vector3f(0.0f, 0.0f, -_T_MAX * (_u[0] + _u[1]));
+		_Mt_B = Vector3f(_L_ROLL * _T_MAX * (_u[1] - _u[0]), 0.0f, _Q_MAX * (_u[1] - _u[0]));
+		generate_ts_aerodynamics();
+
+		// _Fa_I = -_KDV * _v_I;   // first order drag to slow down the aircraft
+		// _Ma_B = -_KDW * _w_B;   // first order angular damper
+	}
 }
 
-void Sih::generate_aerodynamics()
+void Sih::generate_fw_aerodynamics()
 {
 	_v_B = _C_IB.transpose() * _v_I; 	// velocity in body frame [m/s]
 	float altitude = _H0 - _p_I(2);
@@ -309,9 +438,34 @@ void Sih::generate_aerodynamics()
 	_fuselage.update_aero(_v_B, _w_B, altitude);
 	_Fa_I = _C_IB * (_wing_l.get_Fa() + _wing_r.get_Fa() + _tailplane.get_Fa() + _fin.get_Fa() + _fuselage.get_Fa())
 		- _KDV * _v_I; 	// sum of aerodynamic forces
-	// _Ma_B = wing_l.Ma + wing_r.Ma + tailplane.Ma + fin.Ma + flap_moments() -_KDW * _w_B; 	// aerodynamic moments
 	_Ma_B = _wing_l.get_Ma() + _wing_r.get_Ma() + _tailplane.get_Ma() + _fin.get_Ma() + _fuselage.get_Ma() - _KDW *
 		_w_B; 	// aerodynamic moments
+}
+
+void Sih::generate_ts_aerodynamics()
+{
+	_v_B = _C_IB.transpose() * _v_I; // velocity in body frame [m/s]
+	Vector3f Fa_ts = Vector3f();
+	Vector3f Ma_ts = Vector3f();
+	Vector3f v_ts = _C_BS.transpose() *
+			_v_B; // the aerodynamic is resolved in a frame like a standard aircraft (nose-right-belly)
+	Vector3f w_ts = _C_BS.transpose() * _w_B;
+	float altitude = _H0 - _p_I(2);
+
+	for (int i = 0; i < NB_TS_SEG; i++) {
+		if (i <= NB_TS_SEG / 2) {
+			_ts[i].update_aero(v_ts, w_ts, altitude, _u[5]*TS_DEF_MAX, _T_MAX * _u[1]);
+
+		} else {
+			_ts[i].update_aero(v_ts, w_ts, altitude, -_u[4]*TS_DEF_MAX, _T_MAX * _u[0]);
+		}
+
+		Fa_ts += _ts[i].get_Fa();
+		Ma_ts += _ts[i].get_Ma();
+	}
+
+	_Fa_I = _C_IB * _C_BS * Fa_ts - _KDV * _v_I; 	// sum of aerodynamic forces
+	_Ma_B = _C_BS * Ma_ts - _KDW * _w_B; 	// aerodynamic moments
 }
 
 // apply the equations of motion of a rigid body and integrate one step
@@ -328,7 +482,7 @@ void Sih::equations_of_motion()
 
 	// fake ground, avoid free fall
 	if (_p_I(2) > 0.0f && (_v_I_dot(2) > 0.0f || _v_I(2) > 0.0f)) {
-		if (_vehicle == VehicleType::MC) {
+		if (_vehicle == VehicleType::MC || _vehicle == VehicleType::TS) {
 			if (!_grounded) {    // if we just hit the floor
 				// for the accelerometer, compute the acceleration that will stop the vehicle in one time step
 				_v_I_dot = -_v_I / _dt;
@@ -356,7 +510,7 @@ void Sih::equations_of_motion()
 			_v_I = _v_I + _v_I_dot * _dt;
 			Eulerf RPY = Eulerf(_q);
 			RPY(0) = 0.0f;	// no roll
-			RPY(1) = radians(0.0f); 	// pitch slightly up to get some lift
+			RPY(1) = radians(0.0f); // pitch slightly up if needed to get some lift
 			_q = Quatf(RPY);
 			_w_B.setZero();
 			_grounded = true;
@@ -366,7 +520,7 @@ void Sih::equations_of_motion()
 		// integration: Euler forward
 		_p_I = _p_I + _p_I_dot * _dt;
 		_v_I = _v_I + _v_I_dot * _dt;
-		_q = _q * _dq; // as given in attitude_estimator_q_main.cpp
+		_q = _q * _dq;
 		_q.normalize();
 		// integration Runge-Kutta 4
 		// rk4_update(_p_I, _v_I, _q, _w_B);
@@ -457,12 +611,13 @@ void Sih::send_gps()
 
 void Sih::send_airspeed()
 {
-	airspeed_s  airspeed{};
-	airspeed.timestamp = _now;
+	airspeed_s airspeed{};
+	airspeed.timestamp_sample = _now;
 	airspeed.true_airspeed_m_s	= fmaxf(0.1f, _v_B(0) + generate_wgn() * 0.2f);
 	airspeed.indicated_airspeed_m_s = airspeed.true_airspeed_m_s * sqrtf(_wing_l.get_rho() / RHO);
 	airspeed.air_temperature_celsius = _baro_temp_c;
 	airspeed.confidence = 0.7f;
+	airspeed.timestamp = hrt_absolute_time();
 	_airspeed_pub.publish(airspeed);
 }
 
@@ -532,8 +687,8 @@ float Sih::generate_wgn()   // generate white Gaussian noise sample with std=1
 
 	if (phase) {
 		do {
-			float U1 = (float)rand() / RAND_MAX;
-			float U2 = (float)rand() / RAND_MAX;
+			float U1 = (float)rand() / (float)RAND_MAX;
+			float U2 = (float)rand() / (float)RAND_MAX;
 			V1 = 2.0f * U1 - 1.0f;
 			V2 = 2.0f * U2 - 1.0f;
 			S = V1 * V1 + V2 * V2;
@@ -557,11 +712,22 @@ Vector3f Sih::noiseGauss3f(float stdx, float stdy, float stdz)
 
 int Sih::print_status()
 {
-	if (_vehicle == VehicleType::MC) {
-		PX4_INFO("Running MC");
+#if defined(ENABLE_LOCKSTEP_SCHEDULER)
+	PX4_INFO("Running in lockstep mode");
+	PX4_INFO("Achieved speedup: %.2fX", (double)_achieved_speedup);
+#endif
 
-	} else {
-		PX4_INFO("Running FW");
+	if (_vehicle == VehicleType::MC) {
+		PX4_INFO("Running MultiCopter");
+
+	} else if (_vehicle == VehicleType::FW) {
+		PX4_INFO("Running Fixed-Wing");
+
+	} else if (_vehicle == VehicleType::TS) {
+		PX4_INFO("Running TailSitter");
+		PX4_INFO("aoa [deg]: %d", (int)(degrees(_ts[4].get_aoa())));
+		PX4_INFO("v segment (m/s)");
+		_ts[4].get_vS().print();
 	}
 
 	PX4_INFO("vehicle landed: %d", _grounded);
@@ -581,32 +747,38 @@ int Sih::print_status()
 	_Fa_I.print();
 	PX4_INFO("Aerodynamic moments body frame (Nm)");
 	_Ma_B.print();
-	PX4_INFO("v_I.z: %f", (double)_v_I(2));
-	PX4_INFO("v_I_dot.z: %f", (double)_v_I_dot(2));
+	PX4_INFO("Thruster moments in body frame (Nm)");
+	_Mt_B.print();
 	return 0;
 }
 
+
 int Sih::task_spawn(int argc, char *argv[])
+{
+	_task_id = px4_task_spawn_cmd("sih",
+				      SCHED_DEFAULT,
+				      SCHED_PRIORITY_MAX,
+				      1250,
+				      (px4_main_t)&run_trampoline,
+				      (char *const *)argv);
+
+	if (_task_id < 0) {
+		_task_id = -1;
+		return -errno;
+	}
+
+	return 0;
+}
+
+Sih *Sih::instantiate(int argc, char *argv[])
 {
 	Sih *instance = new Sih();
 
-	if (instance) {
-		_object.store(instance);
-		_task_id = task_id_is_work_queue;
-
-		if (instance->init()) {
-			return PX4_OK;
-		}
-
-	} else {
+	if (instance == nullptr) {
 		PX4_ERR("alloc failed");
 	}
 
-	delete instance;
-	_object.store(nullptr);
-	_task_id = -1;
-
-	return PX4_ERROR;
+	return instance;
 }
 
 int Sih::custom_command(int argc, char *argv[])

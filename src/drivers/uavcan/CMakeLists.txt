@@ -51,7 +51,7 @@ if(CONFIG_ARCH_CHIP)
 		endif()
 	elseif(${CONFIG_ARCH_CHIP} MATCHES "stm32")
 		set(UAVCAN_DRIVER "stm32")
-		set(UAVCAN_TIMER 5) # The default timer is TIM5
+		set(UAVCAN_TIMER 6) # The default timer is TIM6
 		if (DEFINED config_uavcan_timer_override)
 			set (UAVCAN_TIMER  ${config_uavcan_timer_override})
 		endif()
@@ -102,6 +102,7 @@ set(DSDLC_INPUTS
 	"${LIBUAVCAN_DIR}/dsdl/ardupilot"
 	"${LIBUAVCAN_DIR}/dsdl/com"
 	"${LIBUAVCAN_DIR}/dsdl/cuav"
+	"${LIBUAVCAN_DIR}/dsdl/dronecan"
 	"${LIBUAVCAN_DIR}/dsdl/uavcan"
 )
 set(DSDLC_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/include/dsdlc_generated")
@@ -126,6 +127,8 @@ px4_add_module(
 	MODULE drivers__uavcan
 	MAIN uavcan
 	STACK_MAIN 4096
+	COMPILE_FLAGS
+		-Wno-format-security # logmessage.hpp
 	INCLUDES
 		${DSDLC_OUTPUT}
 		${LIBUAVCAN_DIR}/libuavcan/include
@@ -161,8 +164,9 @@ px4_add_module(
 		sensors/rangefinder.cpp
 		sensors/accel.cpp
 		sensors/gyro.cpp
-		sensors/cbat.cpp
 		sensors/ice_status.cpp
+		sensors/hygrometer.cpp
+		sensors/safety_button.cpp
 
 	MODULE_CONFIG
 		module.yaml
@@ -170,11 +174,11 @@ px4_add_module(
 	DEPENDS
 		px4_uavcan_dsdlc
 
+		button_publisher
 		drivers_rangefinder
 		led
 		mixer
 		mixer_module
-		output_limit
 		version
 
 		git_uavcan

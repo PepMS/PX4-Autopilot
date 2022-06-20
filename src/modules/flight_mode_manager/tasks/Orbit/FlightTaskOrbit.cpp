@@ -37,7 +37,9 @@
 
 #include "FlightTaskOrbit.hpp"
 
+#include <lib/systemlib/mavlink_log.h>
 #include <mathlib/mathlib.h>
+#include <px4_platform_common/events.h>
 #include <lib/geo/geo.h>
 
 using namespace matrix;
@@ -51,28 +53,36 @@ bool FlightTaskOrbit::applyCommandParameters(const vehicle_command_s &command)
 {
 	bool ret = true;
 	// save previous velocity and roatation direction
-	bool is_clockwise = _orbit_velocity > 0;
-
+	bool new_is_clockwise = _orbit_velocity > 0;
 	float new_radius = _orbit_radius;
-	float new_abs_velocity = fabsf(_orbit_velocity);
+	float new_absolute_velocity = fabsf(_orbit_velocity);
 
 	// commanded radius
 	if (PX4_ISFINITE(command.param1)) {
 		// Note: Radius sign is defined as orbit direction in MAVLINK
-		float radius = command.param1;
-		is_clockwise = radius > 0;
-		new_radius = fabsf(radius);
+		const float radius_parameter = command.param1;
+		new_is_clockwise = radius_parameter > 0;
+		new_radius = fabsf(radius_parameter);
 	}
 
 	// commanded velocity, take sign of radius as rotation direction
 	if (PX4_ISFINITE(command.param2)) {
-		new_abs_velocity = command.param2;
+		new_absolute_velocity = command.param2;
 	}
 
-	float new_velocity = (is_clockwise ? 1.f : -1.f) * new_abs_velocity;
-	_sanitizeParams(new_radius, new_velocity);
-	_orbit_radius = new_radius;
-	_orbit_velocity = new_velocity;
+	float new_velocity = signFromBool(new_is_clockwise) * new_absolute_velocity;
+
+	if (math::isInRange(new_radius, _radius_min, _radius_max)) {
+		_started_clockwise = new_is_clockwise;
+		_sanitizeParams(new_radius, new_velocity);
+		_orbit_radius = new_radius;
+		_orbit_velocity = new_velocity;
+
+	} else {
+		mavlink_log_critical(&_mavlink_log_pub, "Orbit radius limit exceeded\t");
+		events::send(events::ID("orbit_radius_exceeded"), events::Log::Alert, "Orbit radius limit exceeded");
+		ret = false;
+	}
 
 	// commanded heading behaviour
 	if (PX4_ISFINITE(command.param3)) {
@@ -84,10 +94,8 @@ bool FlightTaskOrbit::applyCommandParameters(const vehicle_command_s &command)
 
 	// commanded center coordinates
 	if (PX4_ISFINITE(command.param5) && PX4_ISFINITE(command.param6)) {
-		if (map_projection_initialized(&_global_local_proj_ref)) {
-			map_projection_project(&_global_local_proj_ref,
-					       command.param5, command.param6,
-					       &_center(0), &_center(1));
+		if (_geo_projection.isInitialized()) {
+			_center.xy() = _geo_projection.project(command.param5, command.param6);
 
 		} else {
 			ret = false;
@@ -96,7 +104,7 @@ bool FlightTaskOrbit::applyCommandParameters(const vehicle_command_s &command)
 
 	// commanded altitude
 	if (PX4_ISFINITE(command.param7)) {
-		if (map_projection_initialized(&_global_local_proj_ref)) {
+		if (_geo_projection.isInitialized()) {
 			_center(2) = _global_local_alt0 - command.param7;
 
 		} else {
@@ -105,10 +113,9 @@ bool FlightTaskOrbit::applyCommandParameters(const vehicle_command_s &command)
 	}
 
 	// perpendicularly approach the orbit circle again when new parameters get commanded
-	if (!_is_position_on_circle()) {
+	if (!_is_position_on_circle() && !_in_circle_approach) {
 		_in_circle_approach = true;
-		_position_smoothing.reset({0.f, 0.f, 0.f}, _velocity, _position);
-		_circle_approach_start_position = _position;
+		_position_smoothing.reset(_acceleration_setpoint, _velocity_setpoint, _position);
 	}
 
 	return ret;
@@ -121,9 +128,9 @@ bool FlightTaskOrbit::sendTelemetry()
 	orbit_status.frame = 0; // MAV_FRAME::MAV_FRAME_GLOBAL
 	orbit_status.yaw_behaviour = _yaw_behaviour;
 
-	if (map_projection_initialized(&_global_local_proj_ref)) {
+	if (_geo_projection.isInitialized()) {
 		// local -> global
-		map_projection_reproject(&_global_local_proj_ref, _center(0), _center(1), &orbit_status.x, &orbit_status.y);
+		_geo_projection.reproject(_center(0), _center(1), orbit_status.x, orbit_status.y);
 		orbit_status.z = _global_local_alt0 - _position_setpoint(2);
 
 	} else {
@@ -151,12 +158,11 @@ void FlightTaskOrbit::_sanitizeParams(float &radius, float &velocity) const
 	}
 }
 
-bool FlightTaskOrbit::activate(const vehicle_local_position_setpoint_s &last_setpoint)
+bool FlightTaskOrbit::activate(const trajectory_setpoint_s &last_setpoint)
 {
 	bool ret = FlightTaskManualAltitude::activate(last_setpoint);
 	_orbit_radius = _radius_min;
-	_orbit_velocity =  1.f;
-	_sanitizeParams(_orbit_radius, _orbit_velocity);
+	_orbit_velocity = 1.f;
 	_center = _position;
 	_initial_heading = _yaw;
 	_slew_rate_yaw.setForcedValue(_yaw);
@@ -170,37 +176,40 @@ bool FlightTaskOrbit::activate(const vehicle_local_position_setpoint_s &last_set
 	      && PX4_ISFINITE(_velocity(1))
 	      && PX4_ISFINITE(_velocity(2));
 
-	_position_smoothing.reset({0.f, 0.f, 0.f}, _velocity, _position);
-	_circle_approach_start_position = _position;
+	Vector3f pos_prev{last_setpoint.position};
+	Vector3f vel_prev{last_setpoint.velocity};
+	Vector3f accel_prev{last_setpoint.acceleration};
+
+	for (int i = 0; i < 3; i++) {
+		// If the position setpoint is unknown, set to the current position
+		if (!PX4_ISFINITE(pos_prev(i))) { pos_prev(i) = _position(i); }
+
+		// If the velocity setpoint is unknown, set to the current velocity
+		if (!PX4_ISFINITE(vel_prev(i))) { vel_prev(i) = _velocity(i); }
+
+		// No acceleration estimate available, set to zero if the setpoint is NAN
+		if (!PX4_ISFINITE(accel_prev(i))) { accel_prev(i) = 0.f; }
+	}
+
+	_position_smoothing.reset(accel_prev, vel_prev, pos_prev);
+	_in_circle_approach = true;
 
 	return ret;
 }
 
 bool FlightTaskOrbit::update()
 {
-	// update altitude
-	bool ret = FlightTaskManualAltitude::update();
-
+	bool ret = true;
 	_updateTrajectoryBoundaries();
-
-	// stick input adjusts parameters within a fixed time frame
-	float radius = _orbit_radius - _sticks.getPositionExpo()(0) * _deltatime * (_radius_max / 8.f);
-	float velocity = _orbit_velocity - _sticks.getPositionExpo()(1) * _deltatime * (_velocity_max / 4.f);
-	_sanitizeParams(radius, velocity);
-	_orbit_radius = radius;
-	_orbit_velocity = velocity;
+	_adjustParametersByStick();
 
 	if (_is_position_on_circle()) {
 		if (_in_circle_approach) {
 			_in_circle_approach = false;
-			_altitude_velocity_smoothing.reset(0, _velocity(2), _position(2));
-		}
-
-	} else {
-		if (!_in_circle_approach) {
-			_in_circle_approach = true;
-			_position_smoothing.reset({0.f, 0.f, 0.f}, _velocity, _position);
-			_circle_approach_start_position = _position;
+			FlightTaskManualAltitudeSmoothVel::_smoothing.reset(
+				PX4_ISFINITE(_acceleration_setpoint(2)) ? _acceleration_setpoint(2) : 0.f,
+				PX4_ISFINITE(_velocity_setpoint(2)) ? _velocity_setpoint(2) : _velocity(2),
+				PX4_ISFINITE(_position_setpoint(2)) ? _position_setpoint(2) : _position(2));
 		}
 	}
 
@@ -208,20 +217,12 @@ bool FlightTaskOrbit::update()
 		_generate_circle_approach_setpoints();
 
 	} else {
-		// this generates x / y setpoints
+		// update altitude
+		ret = ret && FlightTaskManualAltitudeSmoothVel::update();
+
+		// this generates x, y and yaw setpoints
 		_generate_circle_setpoints();
 		_generate_circle_yaw_setpoints();
-
-		// in case we have a velocity setpoint in altititude (from altitude parent)
-		// smooth this
-		if (!PX4_ISFINITE(_position_setpoint(2))) {
-			_altitude_velocity_smoothing.updateDurations(_velocity_setpoint(2));
-			_altitude_velocity_smoothing.updateTraj(_deltatime);
-			_velocity_setpoint(2) = _altitude_velocity_smoothing.getCurrentVelocity();
-			_acceleration_setpoint(2) = _altitude_velocity_smoothing.getCurrentAcceleration();
-			// set orbit altitude center to expected new altitude
-			_center(2) = _altitude_velocity_smoothing.getCurrentPosition();
-		}
 	}
 
 	// Apply yaw smoothing
@@ -247,22 +248,14 @@ void FlightTaskOrbit::_updateTrajectoryBoundaries()
 	_position_smoothing.setMaxVelocityXY(_param_mpc_xy_vel_max.get());
 	float max_jerk = _param_mpc_jerk_auto.get();
 	_position_smoothing.setMaxJerk({max_jerk, max_jerk, max_jerk}); // TODO : Should be computed using heading
-	_altitude_velocity_smoothing.setMaxJerk(max_jerk);
 
-	if (_unsmoothed_velocity_setpoint(2) < 0.f) { // up
-		float z_accel_constraint = _param_mpc_acc_up_max.get();
-		float z_vel_constraint = _param_mpc_z_vel_max_up.get();
-
-		_position_smoothing.setMaxVelocityZ(z_vel_constraint);
-		_position_smoothing.setMaxAccelerationZ(z_accel_constraint);
-		_altitude_velocity_smoothing.setMaxVel(z_vel_constraint);
-		_altitude_velocity_smoothing.setMaxAccel(z_accel_constraint);
+	if (_velocity_setpoint(2) < 0.f) { // up
+		_position_smoothing.setMaxVelocityZ(_param_mpc_z_v_auto_up.get());
+		_position_smoothing.setMaxAccelerationZ(_param_mpc_acc_up_max.get());
 
 	} else { // down
 		_position_smoothing.setMaxAccelerationZ(_param_mpc_acc_down_max.get());
-		_position_smoothing.setMaxVelocityZ(_param_mpc_z_vel_max_dn.get());
-		_altitude_velocity_smoothing.setMaxVel(_param_mpc_acc_down_max.get());
-		_altitude_velocity_smoothing.setMaxAccel(_param_mpc_z_vel_max_dn.get());
+		_position_smoothing.setMaxVelocityZ(_param_mpc_z_v_auto_dn.get());
 	}
 
 }
@@ -272,6 +265,33 @@ bool FlightTaskOrbit::_is_position_on_circle() const
 	return (fabsf(Vector2f(_position - _center).length() - _orbit_radius) < _horizontal_acceptance_radius)
 	       && fabsf(_position(2) - _center(2)) < _param_nav_mc_alt_rad.get();
 
+}
+
+void FlightTaskOrbit::_adjustParametersByStick()
+{
+	float radius = _orbit_radius;
+	float velocity = _orbit_velocity;
+
+	switch (_yaw_behaviour) {
+	case orbit_status_s::ORBIT_YAW_BEHAVIOUR_HOLD_FRONT_TANGENT_TO_CIRCLE:
+		radius -= signFromBool(_started_clockwise) * _sticks.getPositionExpo()(1) * _deltatime * _param_mpc_xy_cruise.get();
+		velocity += signFromBool(_started_clockwise) * _sticks.getPositionExpo()(0) * _deltatime * _param_mpc_acc_hor.get();
+		break;
+
+	case orbit_status_s::ORBIT_YAW_BEHAVIOUR_HOLD_INITIAL_HEADING:
+	case orbit_status_s::ORBIT_YAW_BEHAVIOUR_UNCONTROLLED:
+	case orbit_status_s::ORBIT_YAW_BEHAVIOUR_RC_CONTROLLED:
+	case orbit_status_s::ORBIT_YAW_BEHAVIOUR_HOLD_FRONT_TO_CIRCLE_CENTER:
+	default:
+		// stick input adjusts parameters within a fixed time frame
+		radius -= _sticks.getPositionExpo()(0) * _deltatime * _param_mpc_xy_cruise.get();
+		velocity -= _sticks.getPositionExpo()(1) * _deltatime * _param_mpc_acc_hor.get();
+		break;
+	}
+
+	_sanitizeParams(radius, velocity);
+	_orbit_radius = radius;
+	_orbit_velocity = velocity;
 }
 
 void FlightTaskOrbit::_generate_circle_approach_setpoints()
@@ -284,15 +304,15 @@ void FlightTaskOrbit::_generate_circle_approach_setpoints()
 	const Vector3f target_circle_point{closest_point_on_circle(0), closest_point_on_circle(1), _center(2)};
 
 	PositionSmoothing::PositionSmoothingSetpoints out_setpoints;
-	_position_smoothing.generateSetpoints(_position, {
-		_circle_approach_start_position, target_circle_point, target_circle_point
-	},
+	_position_smoothing.generateSetpoints(_position, target_circle_point,
 	{0.f, 0.f, 0.f}, _deltatime, false, out_setpoints);
 
 	_yaw_setpoint = atan2f(position_to_center_xy(1), position_to_center_xy(0));
 
 	_position_setpoint = out_setpoints.position;
 	_velocity_setpoint = out_setpoints.velocity;
+	_acceleration_setpoint = out_setpoints.acceleration;
+	_jerk_setpoint = out_setpoints.jerk;
 }
 
 void FlightTaskOrbit::_generate_circle_setpoints()
@@ -330,7 +350,8 @@ void FlightTaskOrbit::_generate_circle_yaw_setpoints()
 		break;
 
 	case orbit_status_s::ORBIT_YAW_BEHAVIOUR_HOLD_FRONT_TANGENT_TO_CIRCLE:
-		_yaw_setpoint = atan2f(sign(_orbit_velocity) * center_to_position(0), -sign(_orbit_velocity) * center_to_position(1));
+		_yaw_setpoint = atan2f(signFromBool(_started_clockwise) * center_to_position(0),
+				       -signFromBool(_started_clockwise) * center_to_position(1));
 		_yawspeed_setpoint = _orbit_velocity / _orbit_radius;
 		break;
 

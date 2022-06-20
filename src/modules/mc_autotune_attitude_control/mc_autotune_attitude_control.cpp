@@ -45,6 +45,7 @@ McAutotuneAttitudeControl::McAutotuneAttitudeControl() :
 	ModuleParams(nullptr),
 	WorkItem(MODULE_NAME, px4::wq_configurations::hp_default)
 {
+	_autotune_attitude_control_status_pub.advertise();
 	reset();
 }
 
@@ -56,7 +57,7 @@ McAutotuneAttitudeControl::~McAutotuneAttitudeControl()
 bool McAutotuneAttitudeControl::init()
 {
 	if (!_parameter_update_sub.registerCallback()) {
-		PX4_ERR("parameter_update callback registration failed!");
+		PX4_ERR("callback registration failed");
 		return false;
 	}
 
@@ -498,7 +499,7 @@ void McAutotuneAttitudeControl::revertParamGains()
 bool McAutotuneAttitudeControl::registerActuatorControlsCallback()
 {
 	if (!_actuator_controls_sub.registerCallback()) {
-		PX4_ERR("actuator_controls callback registration failed!");
+		PX4_ERR("callback registration failed");
 		return false;
 	}
 

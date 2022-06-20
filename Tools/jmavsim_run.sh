@@ -5,12 +5,13 @@ set -e
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd "$SCRIPT_DIR/jMAVSim"
 
-tcp_port=4560
+port=4560
 extra_args=
 baudrate=921600
 device=
 ip="127.0.0.1"
-while getopts ":b:d:p:qsr:f:i:loa" opt; do
+protocol="tcp"
+while getopts ":b:d:u:p:qsr:f:i:loat" opt; do
 	case $opt in
 		b)
 			baudrate=$OPTARG
@@ -18,11 +19,14 @@ while getopts ":b:d:p:qsr:f:i:loa" opt; do
 		d)
 			device="$OPTARG"
 			;;
+		u)
+			protocol="udp"
+			;;
 		i)
 			ip="$OPTARG"
 			;;
 		p)
-			tcp_port=$OPTARG
+			port=$OPTARG
 			;;
 		q)
 			extra_args="$extra_args -qgc"
@@ -40,7 +44,10 @@ while getopts ":b:d:p:qsr:f:i:loa" opt; do
 			extra_args="$extra_args -disponly"
 			;;
 		a)
-			extra_args="$extra_args -fw" # aircraft
+			extra_args="$extra_args -fw" # aircraft model
+			;;
+		t)
+			extra_args="$extra_args -ts" # tailsitter model
 			;;
 		\?)
 			echo "Invalid option: -$OPTARG" >&2
@@ -50,7 +57,11 @@ while getopts ":b:d:p:qsr:f:i:loa" opt; do
 done
 
 if [ "$device" == "" ]; then
-	device="-tcp $ip:$tcp_port"
+	if [ "$protocol" == "tcp" ]; then
+		device="-tcp $ip:$port"
+	else
+		device="-udp $port"
+	fi
 else
 	device="-serial $device $baudrate"
 fi

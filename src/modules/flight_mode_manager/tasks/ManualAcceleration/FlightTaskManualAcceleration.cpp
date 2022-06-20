@@ -43,21 +43,21 @@ FlightTaskManualAcceleration::FlightTaskManualAcceleration() :
 	_stick_acceleration_xy(this)
 {};
 
-bool FlightTaskManualAcceleration::activate(const vehicle_local_position_setpoint_s &last_setpoint)
+bool FlightTaskManualAcceleration::activate(const trajectory_setpoint_s &last_setpoint)
 {
 	bool ret = FlightTaskManualAltitudeSmoothVel::activate(last_setpoint);
 
 	_stick_acceleration_xy.resetPosition();
 
-	if (PX4_ISFINITE(last_setpoint.vx) && PX4_ISFINITE(last_setpoint.vy)) {
-		_stick_acceleration_xy.resetVelocity(Vector2f(last_setpoint.vx, last_setpoint.vy));
+	if (PX4_ISFINITE(last_setpoint.velocity[0]) && PX4_ISFINITE(last_setpoint.velocity[1])) {
+		_stick_acceleration_xy.resetVelocity(Vector2f(last_setpoint.velocity));
 
 	} else {
 		_stick_acceleration_xy.resetVelocity(_velocity.xy());
 	}
 
 	if (PX4_ISFINITE(last_setpoint.acceleration[0]) && PX4_ISFINITE(last_setpoint.acceleration[1])) {
-		_stick_acceleration_xy.resetAcceleration(Vector2f(last_setpoint.acceleration[0], last_setpoint.acceleration[1]));
+		_stick_acceleration_xy.resetAcceleration(Vector2f(last_setpoint.acceleration));
 	}
 
 	return ret;
@@ -68,8 +68,10 @@ bool FlightTaskManualAcceleration::update()
 	bool ret = FlightTaskManualAltitudeSmoothVel::update();
 
 	_stick_yaw.generateYawSetpoint(_yawspeed_setpoint, _yaw_setpoint,
-				       _sticks.getPositionExpo()(3) * math::radians(_param_mpc_man_y_max.get()), _yaw, _deltatime);
-	_stick_acceleration_xy.generateSetpoints(_sticks.getPositionExpo().slice<2, 1>(0, 0), _yaw, _yaw_setpoint, _position,
+				       _sticks.getPositionExpo()(3) * math::radians(_param_mpc_man_y_max.get()), _yaw, _is_yaw_good_for_control, _deltatime);
+
+	_stick_acceleration_xy.generateSetpoints(_sticks.getPositionExpo().slice<2, 1>(0, 0), _yaw, _yaw_setpoint,
+			_position,
 			_velocity_setpoint_feedback.xy(), _deltatime);
 	_stick_acceleration_xy.getSetpoints(_position_setpoint, _velocity_setpoint, _acceleration_setpoint);
 

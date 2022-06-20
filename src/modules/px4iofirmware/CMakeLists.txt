@@ -34,13 +34,13 @@
 option(PX4IO_PERF "Enable px4io perf counters" OFF)
 
 add_library(px4iofirmware
-	adc.c
-	controls.c
+	adc.cpp
+	controls.cpp
 	mixer.cpp
-	px4io.c
+	px4io.cpp
 	registers.c
-	safety.c
-	serial.c
+	safety_button.cpp
+	serial.cpp
 )
 
 set_property(GLOBAL APPEND PROPERTY PX4_MODULE_LIBRARIES px4iofirmware)
@@ -51,6 +51,7 @@ target_link_libraries(px4iofirmware
 		nuttx_apps
 		nuttx_arch
 		nuttx_c
+		nuttx_mm
 		rc
 )
 

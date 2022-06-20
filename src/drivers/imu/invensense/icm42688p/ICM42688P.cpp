@@ -107,14 +107,27 @@ void ICM42688P::print_status()
 
 int ICM42688P::probe()
 {
-	const uint8_t whoami = RegisterRead(Register::BANK_0::WHO_AM_I);
+	for (int i = 0; i < 3; i++) {
+		uint8_t whoami = RegisterRead(Register::BANK_0::WHO_AM_I);
 
-	if (whoami != WHOAMI) {
-		DEVICE_DEBUG("unexpected WHO_AM_I 0x%02x", whoami);
-		return PX4_ERROR;
+		if (whoami == WHOAMI) {
+			return PX4_OK;
+
+		} else {
+			DEVICE_DEBUG("unexpected WHO_AM_I 0x%02x", whoami);
+
+			uint8_t reg_bank_sel = RegisterRead(Register::BANK_0::REG_BANK_SEL);
+			int bank = reg_bank_sel >> 4;
+
+			if (bank >= 1 && bank <= 3) {
+				DEVICE_DEBUG("incorrect register bank for WHO_AM_I REG_BANK_SEL:0x%02x, bank:%d", reg_bank_sel, bank);
+				// force bank selection and retry
+				SelectRegisterBank(REG_BANK_SEL_BIT::USER_BANK_0, true);
+			}
+		}
 	}
 
-	return PX4_OK;
+	return PX4_ERROR;
 }
 
 void ICM42688P::RunImpl()
@@ -261,20 +274,22 @@ void ICM42688P::RunImpl()
 				}
 			}
 
-			// check configuration registers periodically or immediately following any failure
-			if (RegisterCheck(_register_bank0_cfg[_checked_register_bank0])
-			    && RegisterCheck(_register_bank1_cfg[_checked_register_bank1])
-			    && RegisterCheck(_register_bank2_cfg[_checked_register_bank2])
-			   ) {
-				_last_config_check_timestamp = now;
-				_checked_register_bank0 = (_checked_register_bank0 + 1) % size_register_bank0_cfg;
-				_checked_register_bank1 = (_checked_register_bank1 + 1) % size_register_bank1_cfg;
-				_checked_register_bank2 = (_checked_register_bank2 + 1) % size_register_bank2_cfg;
+			if (!success || hrt_elapsed_time(&_last_config_check_timestamp) > 100_ms) {
+				// check configuration registers periodically or immediately following any failure
+				if (RegisterCheck(_register_bank0_cfg[_checked_register_bank0])
+				    && RegisterCheck(_register_bank1_cfg[_checked_register_bank1])
+				    && RegisterCheck(_register_bank2_cfg[_checked_register_bank2])
+				   ) {
+					_last_config_check_timestamp = now;
+					_checked_register_bank0 = (_checked_register_bank0 + 1) % size_register_bank0_cfg;
+					_checked_register_bank1 = (_checked_register_bank1 + 1) % size_register_bank1_cfg;
+					_checked_register_bank2 = (_checked_register_bank2 + 1) % size_register_bank2_cfg;
 
-			} else {
-				// register check failed, force reset
-				perf_count(_bad_register_perf);
-				Reset();
+				} else {
+					// register check failed, force reset
+					perf_count(_bad_register_perf);
+					Reset();
+				}
 			}
 		}
 
@@ -313,9 +328,9 @@ void ICM42688P::ConfigureFIFOWatermark(uint8_t samples)
 	}
 }
 
-void ICM42688P::SelectRegisterBank(enum REG_BANK_SEL_BIT bank)
+void ICM42688P::SelectRegisterBank(enum REG_BANK_SEL_BIT bank, bool force)
 {
-	if (bank != _last_register_bank) {
+	if (bank != _last_register_bank || force) {
 		// select BANK_0
 		uint8_t cmd_bank_sel[2] {};
 		cmd_bank_sel[0] = static_cast<uint8_t>(Register::BANK_0::REG_BANK_SEL);

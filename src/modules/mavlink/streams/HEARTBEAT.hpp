@@ -131,13 +131,7 @@ private:
 			    || vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_TERMINATION) {
 				system_status = MAV_STATE_FLIGHT_TERMINATION;
 
-			} else if (vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_AUTO_LANDENGFAIL) {
-				system_status = MAV_STATE_EMERGENCY;
-
-			} else if (vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_AUTO_LANDGPSFAIL) {
-				system_status = MAV_STATE_EMERGENCY;
-
-			} else if (vehicle_status_flags.condition_calibration_enabled) {
+			} else if (vehicle_status_flags.calibration_enabled) {
 				system_status = MAV_STATE_CALIBRATING;
 			}
 

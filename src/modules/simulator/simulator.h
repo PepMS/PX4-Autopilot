@@ -44,7 +44,6 @@
 
 #include <drivers/drv_hrt.h>
 #include <lib/drivers/accelerometer/PX4Accelerometer.hpp>
-#include <lib/drivers/barometer/PX4Barometer.hpp>
 #include <lib/drivers/gyroscope/PX4Gyroscope.hpp>
 #include <lib/drivers/magnetometer/PX4Magnetometer.hpp>
 #include <lib/geo/geo.h>
@@ -57,13 +56,17 @@
 #include <uORB/Subscription.hpp>
 #include <uORB/SubscriptionInterval.hpp>
 #include <uORB/topics/actuator_outputs.h>
+#include <uORB/topics/battery_status.h>
 #include <uORB/topics/differential_pressure.h>
 #include <uORB/topics/distance_sensor.h>
 #include <uORB/topics/input_rc.h>
+#include <uORB/topics/esc_status.h>
+#include <uORB/topics/esc_report.h>
 #include <uORB/topics/irlock_report.h>
 #include <uORB/topics/manual_control_setpoint.h>
 #include <uORB/topics/optical_flow.h>
 #include <uORB/topics/parameter_update.h>
+#include <uORB/topics/sensor_baro.h>
 #include <uORB/topics/sensor_gps.h>
 #include <uORB/topics/vehicle_angular_velocity.h>
 #include <uORB/topics/vehicle_attitude.h>
@@ -76,8 +79,8 @@
 
 #include <random>
 
-#include <v2.0/common/mavlink.h>
-#include <v2.0/mavlink_types.h>
+#include <mavlink.h>
+#include <mavlink_types.h>
 
 using namespace time_literals;
 
@@ -131,9 +134,7 @@ public:
 #endif
 
 private:
-	Simulator() : ModuleParams(nullptr)
-	{
-	}
+	Simulator();
 
 	~Simulator()
 	{
@@ -181,8 +182,7 @@ private:
 	PX4Magnetometer		_px4_mag_0{197388, ROTATION_NONE}; // 197388: DRV_MAG_DEVTYPE_MAGSIM, BUS: 1, ADDR: 1, TYPE: SIMULATION
 	PX4Magnetometer		_px4_mag_1{197644, ROTATION_NONE}; // 197644: DRV_MAG_DEVTYPE_MAGSIM, BUS: 2, ADDR: 1, TYPE: SIMULATION
 
-	PX4Barometer		_px4_baro_0{6620172}; // 6620172: DRV_BARO_DEVTYPE_BAROSIM, BUS: 1, ADDR: 4, TYPE: SIMULATION
-	PX4Barometer		_px4_baro_1{6620428}; // 6620428: DRV_BARO_DEVTYPE_BAROSIM, BUS: 2, ADDR: 4, TYPE: SIMULATION
+	uORB::PublicationMulti<sensor_baro_s> _sensor_baro_pubs[2] {{ORB_ID(sensor_baro)}, {ORB_ID(sensor_baro)}};
 
 	float _sensors_temperature{0};
 
@@ -193,6 +193,7 @@ private:
 	uORB::Publication<differential_pressure_s>	_differential_pressure_pub{ORB_ID(differential_pressure)};
 	uORB::PublicationMulti<optical_flow_s>		_flow_pub{ORB_ID(optical_flow)};
 	uORB::Publication<irlock_report_s>		_irlock_report_pub{ORB_ID(irlock_report)};
+	uORB::Publication<esc_status_s>			_esc_status_pub{ORB_ID(esc_status)};
 	uORB::Publication<vehicle_odometry_s>		_visual_odometry_pub{ORB_ID(vehicle_visual_odometry)};
 	uORB::Publication<vehicle_odometry_s>		_mocap_odometry_pub{ORB_ID(vehicle_mocap_odometry)};
 
@@ -235,6 +236,7 @@ private:
 	void send();
 	void send_controls();
 	void send_heartbeat();
+	void send_esc_telemetry(mavlink_hil_actuator_controls_t hil_act_control);
 	void send_mavlink_message(const mavlink_message_t &aMsg);
 	void update_sensors(const hrt_abstime &time, const mavlink_hil_sensor_t &sensors);
 
@@ -262,12 +264,14 @@ private:
 
 	uORB::Subscription _vehicle_status_sub{ORB_ID(vehicle_status)};
 	uORB::Subscription _vehicle_command_sub{ORB_ID(vehicle_command)};
+	uORB::Subscription _battery_status_sub{ORB_ID(battery_status)};
 
 	// hil map_ref data
-	map_projection_reference_s	_global_local_proj_ref{};
-	float						_global_local_alt0{NAN};
+	MapProjection _global_local_proj_ref{};
+	float _global_local_alt0{NAN};
 
 	vehicle_status_s _vehicle_status{};
+	battery_status_s _battery_status{};
 
 	bool _accel_blocked[ACCEL_COUNT_MAX] {};
 	bool _accel_stuck[ACCEL_COUNT_MAX] {};
@@ -291,6 +295,12 @@ private:
 	float _last_magx{0.0f};
 	float _last_magy{0.0f};
 	float _last_magz{0.0f};
+	bool _use_dynamic_mixing{false};
+
+	float _last_baro_pressure{0.0f};
+	float _last_baro_temperature{0.0f};
+
+	int32_t _output_functions[actuator_outputs_s::NUM_ACTUATOR_OUTPUTS] {};
 
 #if defined(ENABLE_LOCKSTEP_SCHEDULER)
 	px4::atomic<bool> _has_initialized {false};
