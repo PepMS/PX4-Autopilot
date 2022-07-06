@@ -119,6 +119,7 @@ set(models
 	none
 	believer
 	boat
+	borinot
 	cloudship
 	glider
 	if750a
