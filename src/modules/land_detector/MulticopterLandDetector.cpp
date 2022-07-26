@@ -89,10 +89,10 @@ void MulticopterLandDetector::_update_topics()
 
 	if (_vehicle_control_mode_sub.update(&vehicle_control_mode)) {
 		_flag_control_climb_rate_enabled = vehicle_control_mode.flag_control_climb_rate_enabled;
+		_flag_control_motors_enabled = vehicle_control_mode.flag_control_motors_enabled;
 	}
 
-
-	if (vehicle_control_mode.flag_control_motors_enabled) {
+	if (_flag_control_motors_enabled) {
 		actuator_direct_control_s direct_controls;
 		if (_direct_control_sub.update(&direct_controls)) {
 			for (size_t i = 0; i < direct_controls.noutputs; i++) {
@@ -267,6 +267,11 @@ bool MulticopterLandDetector::_get_maybe_landed_state()
 
 	// minimal throttle: initially 10% of throttle range between min and hover
 	float sys_min_throttle = _params.minThrottle + (_params.hoverThrottle - _params.minThrottle) * 0.1f;
+
+	// Disable land detector with Direct Control Motors mode
+	if (_flag_control_motors_enabled) {
+		return false;
+	}
 
 	// Determine the system min throttle based on flight mode
 	if (!_flag_control_climb_rate_enabled) {

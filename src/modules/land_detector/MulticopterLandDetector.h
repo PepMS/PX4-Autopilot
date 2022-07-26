@@ -125,6 +125,7 @@ private:
 
 	bool _flag_control_climb_rate_enabled{false};
 	bool _hover_thrust_initialized{false};
+	bool _flag_control_motors_enabled{false};
 
 	float _actuator_controls_throttle{0.f};
 
